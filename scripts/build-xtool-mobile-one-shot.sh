@@ -9,8 +9,25 @@ LOG="$ROOT/.build/xtool-mobile-one-shot.log"
 CONFIGURATION="${CONFIGURATION:-debug}"
 TRIPLE="${TRIPLE:-arm64-apple-ios}"
 RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
+IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
+IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
 
 mkdir -p "$ROOT/.build"
+
+verify_ipa_engine() {
+  [[ -f "$IPA" ]] || { echo "error: final IPA missing: $IPA" >&2; return 1; }
+  python3 - "$IPA" "$IPA_ENGINE_PATH" <<'PY'
+import sys, zipfile
+ipa, required = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(ipa) as zf:
+    names = set(zf.namelist())
+    if required not in names:
+        print(f"error: compiler engine is not inside final IPA: {required}", file=sys.stderr)
+        sys.exit(1)
+    info = zf.getinfo(required)
+    print(f"verified IPA compiler engine: {required} ({info.file_size} bytes)")
+PY
+}
 
 run_all() {
   cd "$ROOT"
@@ -26,6 +43,7 @@ run_all() {
     echo '=== compiler engine ==='
     echo 'cache hit: final compiler dylib already exists'
     file "$ENGINE" 2>/dev/null || true
+    ls -lh "$ENGINE"
   else
     if [[ -f "$BUILD_ROOT/build.ninja" ]] && grep -q 'XToolCompilerEngine' "$BUILD_ROOT/build.ninja"; then
       echo '=== compiler configure ==='
@@ -38,6 +56,11 @@ run_all() {
     echo '=== compiler build ==='
     bash scripts/run-mobile-compiler-engine.sh build
   fi
+
+  [[ -f "$ENGINE" ]] || {
+    echo "error: compiler build phase ended without final engine: $ENGINE" >&2
+    return 1
+  }
 
   echo
   echo '=== XTool Mobile app build ==='
@@ -59,13 +82,20 @@ run_all() {
 
   echo
   echo '=== IPA package ==='
-  CONFIGURATION="$CONFIGURATION" TRIPLE="$TRIPLE" \
+  CONFIGURATION="$CONFIGURATION" \
+  TRIPLE="$TRIPLE" \
+  COMPILER_ENGINE_DYLIB="$ENGINE" \
+  REQUIRE_COMPILER_ENGINE=1 \
     bash scripts/package-mobile-app.sh
+
+  echo
+  echo '=== IPA verification ==='
+  verify_ipa_engine
 
   echo
   echo '=== SUCCESS ==='
   echo "Compiler engine: $ENGINE"
-  echo "Unsigned IPA:    $ROOT/.build/XToolMobileApp-unsigned.ipa"
+  echo "Unsigned IPA:    $IPA"
 }
 
 set +e
