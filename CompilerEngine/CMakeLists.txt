@@ -13,6 +13,24 @@ endif()
 # consume here are already-built static archives.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
+
+  # LLVMSupport chooses a few system libraries from CMAKE_HOST_UNIX. During our
+  # Linux -> iOS cross-build that can propagate Linux's separate librt into the
+  # final Mach-O link. iOS provides the relevant runtime APIs through libSystem
+  # and has no standalone librt, so remove only the host-only rt dependency.
+  if(TARGET LLVMSupport)
+    get_target_property(_xtool_support_link_libs LLVMSupport LINK_LIBRARIES)
+    if(_xtool_support_link_libs AND NOT _xtool_support_link_libs STREQUAL "_xtool_support_link_libs-NOTFOUND")
+      list(REMOVE_ITEM _xtool_support_link_libs rt)
+      set_property(TARGET LLVMSupport PROPERTY LINK_LIBRARIES "${_xtool_support_link_libs}")
+    endif()
+
+    get_target_property(_xtool_support_interface_libs LLVMSupport INTERFACE_LINK_LIBRARIES)
+    if(_xtool_support_interface_libs AND NOT _xtool_support_interface_libs STREQUAL "_xtool_support_interface_libs-NOTFOUND")
+      list(REMOVE_ITEM _xtool_support_interface_libs rt)
+      set_property(TARGET LLVMSupport PROPERTY INTERFACE_LINK_LIBRARIES "${_xtool_support_interface_libs}")
+    endif()
+  endif()
 endif()
 
 add_library(XToolCompilerEngine SHARED
