@@ -42,30 +42,35 @@ private struct MobileHomeView: View {
                     }
                 }
 
-                Section("Toolchain") {
+                Section("Darwin SDK") {
                     Button {
                         showingToolchainImporter = true
                     } label: {
-                        Label("Import Toolchain", systemImage: "hammer")
+                        Label("Import Darwin SDK", systemImage: "shippingbox")
                     }
 
                     if let toolchain {
                         LabeledContent("Developer", value: toolchain.developerDirectory.lastPathComponent)
-                        LabeledContent("swift-frontend", value: FileManager.default.fileExists(atPath: toolchain.swiftFrontend.path) ? "Found" : "Missing")
+                        LabeledContent("iPhoneOS SDK", value: sdkDisplayName(toolchain))
+                        LabeledContent(
+                            "Standalone frontend",
+                            value: toolchain.hasBundledSwiftFrontend ? "Present" : "Not required"
+                        )
                     } else {
-                        Text("Select the prepared toolchain root or its Developer folder.")
+                        Text("Select darwin.artifactbundle or its Developer folder. The Linux swift-frontend binary is not needed on iPad.")
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Section("Compiler Probe") {
+                Section("Compiler Bridge Probe") {
                     Button {
                         runCompilerProbe()
                     } label: {
-                        Label("Run Compiler Probe", systemImage: "checkmark.seal")
+                        Label("Run SDK + VM Probe", systemImage: "checkmark.seal")
                     }
                     .disabled(toolchain == nil)
 
+                    LabeledContent("Compiler bridge", value: "Next milestone")
                     LabeledContent("Architecture", value: capabilities.architecture)
                     LabeledContent("iOS family", value: capabilities.isRunningOnIOSFamily ? "Yes" : "No")
                     LabeledContent(
@@ -134,34 +139,42 @@ private struct MobileHomeView: View {
             let sdk = try selected.iPhoneOSSDK()
             toolchain = selected
             toolchainScopeURL = url
-            appendLog("toolchain: valid")
-            appendLog("swift-frontend: \(selected.swiftFrontend.lastPathComponent)")
+            appendLog("Darwin SDK tree: valid")
             appendLog("SDK: \(sdk.lastPathComponent)")
+            appendLog(
+                selected.hasBundledSwiftFrontend
+                    ? "standalone swift-frontend: present (not used by mobile backend)"
+                    : "standalone swift-frontend: absent as expected"
+            )
         } catch {
-            appendLog("toolchain import failed: \(String(describing: error))")
+            appendLog("Darwin SDK import failed: \(String(describing: error))")
         }
     }
 
     private func runCompilerProbe() {
         guard let toolchain else {
-            appendLog("probe failed: no toolchain selected")
+            appendLog("probe failed: no Darwin SDK selected")
             return
         }
 
         do {
-            appendLog("probe: validating toolchain...")
+            appendLog("probe: validating Darwin SDK...")
             try toolchain.validate()
             let sdk = try toolchain.iPhoneOSSDK()
-            appendLog("probe: swift-frontend found")
             appendLog("probe: \(sdk.lastPathComponent) found")
+            appendLog("probe: Linux compiler executable not required")
 
             let reservationBytes = 2 * 1024 * 1024 * 1024
             let reserved = MobilePlatformCapabilities.canReserveAddressSpace(bytes: reservationBytes)
             appendLog("probe: 2 GiB VM reservation \(reserved ? "OK" : "FAILED")")
-            appendLog(reserved ? "probe: READY for compiler bridge" : "probe: memory capability needs investigation")
+            appendLog(reserved ? "probe: READY for embedded compiler bridge" : "probe: memory capability needs investigation")
         } catch {
             appendLog("probe failed: \(String(describing: error))")
         }
+    }
+
+    private func sdkDisplayName(_ toolchain: PreparedToolchain) -> String {
+        (try? toolchain.iPhoneOSSDK().lastPathComponent) ?? "Missing"
     }
 
     private func appendLog(_ line: String) {
