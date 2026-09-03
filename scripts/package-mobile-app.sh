@@ -6,7 +6,11 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 BUNDLE_ID="${BUNDLE_ID:-sh.xtool.mobile}"
 DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
-EMBED_RUNTIME="${EMBED_RUNTIME:-1}"
+# Keep the Darwin SDK/runtime outside the .app by default. iOS signing tools may
+# recursively inspect SDK dylibs as if they were app frameworks and fail while
+# signing. Set EMBED_RUNTIME=1 only for experiments with a signer that supports
+# opaque compiler/SDK data inside the bundle.
+EMBED_RUNTIME="${EMBED_RUNTIME:-0}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
@@ -31,11 +35,16 @@ chmod 0755 "$APP/XToolMobileApp"
 
 if [[ "$EMBED_RUNTIME" == "1" ]]; then
   if [[ -d "$RUNTIME/Developer/Platforms/iPhoneOS.platform" ]]; then
-    echo "Embedding prepared iPhoneOS runtime into app bundle..."
+    echo "Embedding prepared iPhoneOS runtime into app bundle (experimental)..."
     cp -a "$RUNTIME" "$APP/MobileRuntime"
   else
     echo "warning: .build/XToolMobileRuntime is missing; packaging without bundled runtime" >&2
     echo "Run: bash scripts/prepare-mobile-runtime.sh" >&2
+  fi
+else
+  echo "Packaging signer-safe IPA without embedded Darwin runtime."
+  if [[ -d "$RUNTIME/Developer/Platforms/iPhoneOS.platform" ]]; then
+    echo "Use .build/XToolMobileRuntime.zip as the external runtime on iPad."
   fi
 fi
 
@@ -115,5 +124,6 @@ Created unsigned IPA:
   $IPA
 
 This IPA is intentionally NOT signed and contains NO provisioning profile.
-Sign it on your iPad with your preferred signer before installing.
+Darwin SDK/runtime embedding: $EMBED_RUNTIME
+Sign it on your iPad, then import XToolMobileRuntime from Files when needed.
 EOF
