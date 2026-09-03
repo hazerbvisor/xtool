@@ -28,6 +28,13 @@ cmark_file = Path(sys.argv[4])
 # because it also enables generated compiler headers and lib/, so gate only the
 # final tools/ and localization subdirectories with our private build switch.
 s = top_file.read_text()
+mode_line = 'set(XTOOL_FRONTEND_LIBRARY_ONLY ON CACHE BOOL "XTool mobile frontend libraries only" FORCE)'
+if mode_line not in s:
+    s = mode_line + '\n' + s
+    print('XTool frontend library-only mode: enabled')
+else:
+    print('XTool frontend library-only mode: already enabled')
+
 old_tools = '  add_subdirectory(tools)'
 new_tools = '  if(NOT XTOOL_FRONTEND_LIBRARY_ONLY)\n    add_subdirectory(tools)\n  endif()'
 if new_tools in s:
@@ -40,7 +47,6 @@ else:
 
 old_localization = '  if(SWIFT_NATIVE_SWIFT_TOOLS_PATH)\n'
 new_localization = '  if(SWIFT_NATIVE_SWIFT_TOOLS_PATH AND NOT XTOOL_FRONTEND_LIBRARY_ONLY)\n'
-# Only replace the localization guard after our newly gated tools block.
 anchor = new_tools
 idx = s.find(anchor)
 if idx < 0:
