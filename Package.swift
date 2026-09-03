@@ -34,6 +34,10 @@ let package = Package(
             name: "XToolSupport",
             targets: ["XToolSupport"]
         ),
+        .library(
+            name: "XToolMobileCore",
+            targets: ["XToolMobileCore"]
+        ),
         .executable(
             name: "xtool",
             targets: ["xtool"]
@@ -103,6 +107,10 @@ let package = Package(
                     condition: .when(platforms: [.linux, .macOS])
                 ),
             ]
+        ),
+        .target(
+            name: "XToolMobileCore",
+            dependencies: []
         ),
         .target(
             name: "XKit",
