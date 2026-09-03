@@ -33,7 +33,7 @@ find_versioned_exec() {
   local pattern="$1"
   local candidate=""
   candidate="$(find /usr/bin /data/data/com.termux/files/usr/bin /opt/swift/usr/bin \
-    -maxdepth 1 -type f -name "$pattern" 2>/dev/null | sort -V | tail -1 || true)"
+    -maxdepth 1 \( -type f -o -type l \) -name "$pattern" 2>/dev/null | sort -V | tail -1 || true)"
   if [[ -n "$candidate" && -x "$candidate" ]]; then
     printf '%s' "$candidate"
     return 0
@@ -78,23 +78,18 @@ clone_release() {
   local url="$1"
   local dest="$2"
   local label="$3"
-
   if [[ -d "$dest/.git" ]]; then
     echo "$label source already present: $dest"
     return 0
   fi
   [[ ! -e "$dest" ]] || die "$dest exists but is not a git checkout"
-
   mkdir -p "$(dirname "$dest")"
   local tmp="$dest.tmp"
   rm -rf "$tmp"
-
   echo "Cloning $label @ $TAG ..."
   local attempt
   for attempt in 1 2 3; do
-    if git -c http.version=HTTP/1.1 clone \
-      --depth 1 --single-branch --branch "$TAG" \
-      "$url" "$tmp"; then
+    if git -c http.version=HTTP/1.1 clone --depth 1 --single-branch --branch "$TAG" "$url" "$tmp"; then
       mv "$tmp" "$dest"
       return 0
     fi
@@ -109,27 +104,19 @@ prepare_sources() {
   mkdir -p "$SRC_ROOT"
   clone_release https://github.com/swiftlang/swift.git "$SRC_ROOT/swift" Swift
   clone_release https://github.com/swiftlang/llvm-project.git "$SRC_ROOT/llvm-project" LLVM/Clang
-
-  echo "Swift HEAD:"
-  git -C "$SRC_ROOT/swift" log -1 --oneline
-  echo "LLVM HEAD:"
-  git -C "$SRC_ROOT/llvm-project" log -1 --oneline
+  echo "Swift HEAD:"; git -C "$SRC_ROOT/swift" log -1 --oneline
+  echo "LLVM HEAD:"; git -C "$SRC_ROOT/llvm-project" log -1 --oneline
 }
 
 prepare_native_tools() {
   mkdir -p "$NATIVE_ROOT/bin"
   ln -sfn "$LLVM_TBLGEN" "$NATIVE_ROOT/bin/llvm-tblgen"
   ln -sfn "$CLANG_TBLGEN" "$NATIVE_ROOT/bin/clang-tblgen"
-
   for tool in llvm-config llvm-profdata llvm-ar llvm-ranlib clang clang++; do
     local path=""
     path="$(command -v "$tool" 2>/dev/null || true)"
-    if [[ -z "$path" && -x "/opt/swift/usr/bin/$tool" ]]; then
-      path="/opt/swift/usr/bin/$tool"
-    fi
-    if [[ -n "$path" ]]; then
-      ln -sfn "$path" "$NATIVE_ROOT/bin/$tool"
-    fi
+    if [[ -z "$path" && -x "/opt/swift/usr/bin/$tool" ]]; then path="/opt/swift/usr/bin/$tool"; fi
+    if [[ -n "$path" ]]; then ln -sfn "$path" "$NATIVE_ROOT/bin/$tool"; fi
   done
 }
 
@@ -145,16 +132,14 @@ configure_engine() {
   echo "llvm-tblgen:        $LLVM_TBLGEN"
   echo "clang-tblgen:       $CLANG_TBLGEN"
   echo "install-name-tool:  ${INSTALL_NAME_TOOL:-MISSING}"
+  echo "Swift check:        forced valid for cross-compile"
+  echo "LLVM host tools:    excluded from install/build"
   echo "jobs later:         $JOBS"
 
-  if [[ -z "$INSTALL_NAME_TOOL" ]]; then
-    die "llvm-install-name-tool not found. Install Debian's LLVM tools (apt install llvm) or expose Termux llvm-install-name-tool, then rerun configure."
-  fi
+  [[ -n "$INSTALL_NAME_TOOL" ]] || die "llvm-install-name-tool not found. Install Debian LLVM tools and rerun."
 
-  # A failed CMake configure can cache NOTFOUND values and partially-created
-  # iOS bundle targets. Configuration is cheap compared with compilation, so
-  # always start this stage from a clean build directory while preserving the
-  # downloaded Swift/LLVM source trees.
+  # Configuration is cheap; always discard only the failed CMake output while
+  # preserving the downloaded Swift/LLVM sources.
   rm -rf "$BUILD_ROOT"
   mkdir -p "$BUILD_ROOT" "$WORK_ROOT/empty-cmark" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
 
@@ -173,6 +158,7 @@ configure_engine() {
     -DCMAKE_CXX_COMPILER_TARGET="$TARGET" \
     -DCMAKE_Swift_COMPILER="$SWIFTC" \
     -DCMAKE_Swift_COMPILER_TARGET="$TARGET" \
+    -DCMAKE_Swift_COMPILER_FORCED=ON \
     -DCMAKE_Swift_FLAGS="-sdk $IOS_SDK -resource-dir $DARWIN_TOOLCHAIN/usr/lib/swift" \
     -DCMAKE_AR="$LLVM_AR" \
     -DCMAKE_RANLIB="$LLVM_RANLIB" \
@@ -186,7 +172,9 @@ configure_engine() {
     -DLLVM_TABLEGEN="$LLVM_TBLGEN" \
     -DCLANG_TABLEGEN="$CLANG_TBLGEN" \
     -DLLVM_BUILD_TOOLS=OFF \
+    -DLLVM_BUILD_UTILS=OFF \
     -DLLVM_INCLUDE_TOOLS=ON \
+    -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DCLANG_INCLUDE_TESTS=OFF \
@@ -236,29 +224,23 @@ configure_engine() {
   section "configuration result"
   echo "CMake configuration completed."
   echo "Next command:"
-  echo "  bash scripts/build-mobile-compiler-engine.sh build"
+  echo "  bash scripts/run-mobile-compiler-engine.sh build"
 }
 
 build_engine() {
-  [[ -f "$BUILD_ROOT/build.ninja" ]] || die "compiler engine is not configured; run: bash scripts/build-mobile-compiler-engine.sh configure"
-
+  [[ -f "$BUILD_ROOT/build.ninja" ]] || die "compiler engine is not configured; run configure first"
   section "build swiftFrontendTool"
   echo "Using $JOBS parallel jobs to reduce memory pressure."
   "$CMAKE" --build "$BUILD_ROOT" --target swiftFrontendTool -- --jobs="$JOBS"
-
   section "built frontend archives"
   find "$BUILD_ROOT" -type f \
-    \( -name 'libswiftFrontendTool.a' \
-       -o -name 'libswiftFrontend.a' \
-       -o -name 'libswiftIRGen.a' \
-       -o -name 'libswiftClangImporter.a' \) \
+    \( -name 'libswiftFrontendTool.a' -o -name 'libswiftFrontend.a' -o -name 'libswiftIRGen.a' -o -name 'libswiftClangImporter.a' \) \
     -print -exec file {} \; 2>/dev/null || true
-
   section "result"
   if find "$BUILD_ROOT" -type f -name 'libswiftFrontendTool.a' -print -quit | grep -q .; then
-    echo "SUCCESS: arm64 iOS Swift frontend dependency graph built far enough to produce libswiftFrontendTool.a"
+    echo "SUCCESS: arm64 iOS Swift frontend dependency graph produced libswiftFrontendTool.a"
   else
-    echo "PARTIAL: build command completed but libswiftFrontendTool.a was not found at an expected path."
+    echo "PARTIAL: build completed but libswiftFrontendTool.a was not found at an expected path."
   fi
 }
 
@@ -267,30 +249,14 @@ show_status() {
   echo "work root: $WORK_ROOT"
   du -sh "$WORK_ROOT" 2>/dev/null || true
   df -h "$WORK_ROOT" 2>/dev/null || true
-  if [[ -f "$BUILD_ROOT/build.ninja" ]]; then
-    echo "configured: yes"
-  else
-    echo "configured: no"
-  fi
+  [[ -f "$BUILD_ROOT/build.ninja" ]] && echo "configured: yes" || echo "configured: no"
   find "$BUILD_ROOT" -type f -name 'libswiftFrontendTool.a' -print 2>/dev/null || true
 }
 
 case "$MODE" in
-  prepare)
-    prepare_sources
-    prepare_native_tools
-    ;;
-  configure)
-    configure_engine
-    ;;
-  build)
-    build_engine
-    ;;
-  status)
-    show_status
-    ;;
-  *)
-    echo "usage: $0 [prepare|configure|build|status]" >&2
-    exit 2
-    ;;
+  prepare) prepare_sources; prepare_native_tools ;;
+  configure) configure_engine ;;
+  build) build_engine ;;
+  status) show_status ;;
+  *) echo "usage: $0 [prepare|configure|build|status]" >&2; exit 2 ;;
 esac
