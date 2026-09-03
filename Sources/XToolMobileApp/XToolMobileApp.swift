@@ -1,7 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import XToolMobileCore
-import ZIPFoundation
 
 @main
 struct XToolMobileApp: App {
@@ -163,7 +162,6 @@ private struct MobileHomeView: View {
             isDirectory: true
         )
 
-        // Fast path for every launch after the first successful extraction.
         let existing = PreparedToolchain(root: extractedRoot)
         if (try? existing.validate()) != nil {
             toolchain = existing
@@ -176,7 +174,7 @@ private struct MobileHomeView: View {
 
         guard let archiveURL = Bundle.main.url(
             forResource: "MobileRuntime",
-            withExtension: "zip"
+            withExtension: "tar"
         ) else {
             appendLog("bundled runtime archive: not present")
             return
@@ -199,7 +197,7 @@ private struct MobileHomeView: View {
                         try fileManager.removeItem(at: extractedRoot)
                     }
 
-                    try fileManager.unzipItem(
+                    try MobileRuntimeArchive.extractTar(
                         at: archiveURL,
                         to: applicationSupport
                     )
