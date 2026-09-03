@@ -7,21 +7,24 @@ SRC_ROOT="$WORK_ROOT/src"
 SWIFT_TOP="$SRC_ROOT/swift/CMakeLists.txt"
 SWIFT_UUID="$SRC_ROOT/swift/cmake/modules/FindUUID.cmake"
 SWIFT_BASIC="$SRC_ROOT/swift/lib/Basic/CMakeLists.txt"
+SWIFT_FRONTEND_TOOL="$SRC_ROOT/swift/lib/FrontendTool/CMakeLists.txt"
 CMARK_CMAKE="$SRC_ROOT/cmark/src/CMakeLists.txt"
 
 [[ -f "$SWIFT_TOP" ]] || { echo "error: Swift CMakeLists.txt not found: $SWIFT_TOP" >&2; exit 1; }
 [[ -f "$SWIFT_UUID" ]] || { echo "error: Swift FindUUID.cmake not found: $SWIFT_UUID" >&2; exit 1; }
 [[ -f "$SWIFT_BASIC" ]] || { echo "error: Swift Basic CMakeLists.txt not found: $SWIFT_BASIC" >&2; exit 1; }
+[[ -f "$SWIFT_FRONTEND_TOOL" ]] || { echo "error: Swift FrontendTool CMakeLists.txt not found: $SWIFT_FRONTEND_TOOL" >&2; exit 1; }
 [[ -f "$CMARK_CMAKE" ]] || { echo "error: swift-cmark CMakeLists.txt not found: $CMARK_CMAKE" >&2; exit 1; }
 
-python3 - "$SWIFT_TOP" "$SWIFT_UUID" "$SWIFT_BASIC" "$CMARK_CMAKE" <<'PY'
+python3 - "$SWIFT_TOP" "$SWIFT_UUID" "$SWIFT_BASIC" "$SWIFT_FRONTEND_TOOL" "$CMARK_CMAKE" <<'PY'
 from pathlib import Path
 import sys
 
 top_file = Path(sys.argv[1])
 uuid_file = Path(sys.argv[2])
 basic_file = Path(sys.argv[3])
-cmark_file = Path(sys.argv[4])
+frontend_file = Path(sys.argv[4])
+cmark_file = Path(sys.argv[5])
 
 # XTool needs Swift's compiler libraries and SwiftCompilerSources, but not the
 # command-line compiler executables. Keeping SWIFT_INCLUDE_TOOLS=ON is important
@@ -87,6 +90,27 @@ elif old in s:
     print('Swift Basic UUID iOS guard: applied')
 else:
     raise SystemExit('error: expected Swift Basic UUID platform check not found')
+
+# Swift main has since changed to make swiftImmediate conditional. Backport that
+# behaviour to 6.3.2 so an AOT-only XTool compiler does not pull MCJIT/ORC/JITLink.
+s = frontend_file.read_text()
+conditional = '''if (SWIFT_BUILD_IMMEDIATE_MODE)
+  target_link_libraries(swiftFrontendTool PRIVATE
+    swiftImmediate)
+endif()'''
+if conditional in s:
+    print('Swift FrontendTool immediate-mode gate: already applied')
+else:
+    immediate_line = '    swiftImmediate\n'
+    if immediate_line not in s:
+        raise SystemExit('error: expected swiftImmediate link line not found')
+    s = s.replace(immediate_line, '', 1)
+    marker = '\nif (SWIFT_BUILD_SWIFT_SYNTAX)'
+    if marker not in s:
+        raise SystemExit('error: expected SwiftSyntax link marker not found')
+    s = s.replace(marker, '\n' + conditional + '\n' + marker, 1)
+    frontend_file.write_text(s)
+    print('Swift FrontendTool immediate-mode gate: applied')
 
 # CMake models iOS executables as bundles. swift-cmark's install rule omits a
 # bundle destination, even though we never install it during this build.
