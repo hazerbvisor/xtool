@@ -29,6 +29,18 @@ find_exec() {
   die "$name not found"
 }
 
+find_versioned_exec() {
+  local pattern="$1"
+  local candidate=""
+  candidate="$(find /usr/bin /data/data/com.termux/files/usr/bin /opt/swift/usr/bin \
+    -maxdepth 1 -type f -name "$pattern" 2>/dev/null | sort -V | tail -1 || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
 IOS_SDK=""
 if [[ -d "$IOS_PLATFORM/Developer/SDKs" ]]; then
   IOS_SDK="$(find "$IOS_PLATFORM/Developer/SDKs" -maxdepth 1 -type d -name 'iPhoneOS*.sdk' | sort -V | tail -1 || true)"
@@ -45,6 +57,22 @@ LLVM_TBLGEN="$(find_exec llvm-tblgen /opt/swift/usr/bin/llvm-tblgen /data/data/c
 CLANG_TBLGEN="$(find_exec clang-tblgen /opt/swift/usr/bin/clang-tblgen /data/data/com.termux/files/usr/bin/clang-tblgen "$(command -v clang-tblgen 2>/dev/null || true)")"
 NINJA="$(find_exec ninja /usr/bin/ninja /data/data/com.termux/files/usr/bin/ninja "$(command -v ninja 2>/dev/null || true)")"
 CMAKE="$(find_exec cmake /usr/bin/cmake "$(command -v cmake 2>/dev/null || true)")"
+
+INSTALL_NAME_TOOL=""
+for candidate in \
+  /opt/swift/usr/bin/llvm-install-name-tool \
+  /data/data/com.termux/files/usr/bin/llvm-install-name-tool \
+  /usr/bin/llvm-install-name-tool \
+  "$(command -v llvm-install-name-tool 2>/dev/null || true)" \
+  "$(command -v install_name_tool 2>/dev/null || true)"; do
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    INSTALL_NAME_TOOL="$candidate"
+    break
+  fi
+done
+if [[ -z "$INSTALL_NAME_TOOL" ]]; then
+  INSTALL_NAME_TOOL="$(find_versioned_exec 'llvm-install-name-tool*' || true)"
+fi
 
 clone_release() {
   local url="$1"
@@ -93,8 +121,6 @@ prepare_native_tools() {
   ln -sfn "$LLVM_TBLGEN" "$NATIVE_ROOT/bin/llvm-tblgen"
   ln -sfn "$CLANG_TBLGEN" "$NATIVE_ROOT/bin/clang-tblgen"
 
-  # Native tools are executed by CMake while the produced compiler libraries
-  # themselves target iPhoneOS.
   for tool in llvm-config llvm-profdata llvm-ar llvm-ranlib clang clang++; do
     local path=""
     path="$(command -v "$tool" 2>/dev/null || true)"
@@ -112,14 +138,24 @@ configure_engine() {
   prepare_native_tools
 
   section "cross configuration"
-  echo "target:        $TARGET"
-  echo "SDK:           $IOS_SDK"
-  echo "Swift tag:     $TAG"
-  echo "build dir:     $BUILD_ROOT"
-  echo "llvm-tblgen:   $LLVM_TBLGEN"
-  echo "clang-tblgen:  $CLANG_TBLGEN"
-  echo "jobs later:    $JOBS"
+  echo "target:             $TARGET"
+  echo "SDK:                $IOS_SDK"
+  echo "Swift tag:          $TAG"
+  echo "build dir:          $BUILD_ROOT"
+  echo "llvm-tblgen:        $LLVM_TBLGEN"
+  echo "clang-tblgen:       $CLANG_TBLGEN"
+  echo "install-name-tool:  ${INSTALL_NAME_TOOL:-MISSING}"
+  echo "jobs later:         $JOBS"
 
+  if [[ -z "$INSTALL_NAME_TOOL" ]]; then
+    die "llvm-install-name-tool not found. Install Debian's LLVM tools (apt install llvm) or expose Termux llvm-install-name-tool, then rerun configure."
+  fi
+
+  # A failed CMake configure can cache NOTFOUND values and partially-created
+  # iOS bundle targets. Configuration is cheap compared with compilation, so
+  # always start this stage from a clean build directory while preserving the
+  # downloaded Swift/LLVM source trees.
+  rm -rf "$BUILD_ROOT"
   mkdir -p "$BUILD_ROOT" "$WORK_ROOT/empty-cmark" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
 
   "$CMAKE" -S "$SRC_ROOT/llvm-project/llvm" -B "$BUILD_ROOT" -G Ninja \
@@ -140,6 +176,7 @@ configure_engine() {
     -DCMAKE_Swift_FLAGS="-sdk $IOS_SDK -resource-dir $DARWIN_TOOLCHAIN/usr/lib/swift" \
     -DCMAKE_AR="$LLVM_AR" \
     -DCMAKE_RANLIB="$LLVM_RANLIB" \
+    -DCMAKE_INSTALL_NAME_TOOL="$INSTALL_NAME_TOOL" \
     -DLLVM_ENABLE_PROJECTS=clang \
     -DLLVM_EXTERNAL_PROJECTS=swift \
     -DLLVM_EXTERNAL_SWIFT_SOURCE_DIR="$SRC_ROOT/swift" \
@@ -148,6 +185,8 @@ configure_engine() {
     -DLLVM_DEFAULT_TARGET_TRIPLE="$TARGET" \
     -DLLVM_TABLEGEN="$LLVM_TBLGEN" \
     -DCLANG_TABLEGEN="$CLANG_TBLGEN" \
+    -DLLVM_BUILD_TOOLS=OFF \
+    -DLLVM_INCLUDE_TOOLS=ON \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DCLANG_INCLUDE_TESTS=OFF \
@@ -159,6 +198,7 @@ configure_engine() {
     -DLLVM_ENABLE_TERMINFO=OFF \
     -DLLVM_ENABLE_ZLIB=OFF \
     -DLLVM_ENABLE_ZSTD=OFF \
+    -DCLANG_BUILD_TOOLS=OFF \
     -DCLANG_ENABLE_ARCMT=OFF \
     -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
     -DSWIFT_HOST_VARIANT=iphoneos \
