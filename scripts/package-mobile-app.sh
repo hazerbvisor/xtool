@@ -6,10 +6,12 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 BUNDLE_ID="${BUNDLE_ID:-sh.xtool.mobile}"
 DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
+EMBED_RUNTIME="${EMBED_RUNTIME:-1}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
 EXECUTABLE="$BUILD_DIR/XToolMobileApp"
+RUNTIME="$ROOT/.build/XToolMobileRuntime"
 STAGE="$ROOT/.build/mobile-package"
 PAYLOAD="$STAGE/Payload"
 APP="$PAYLOAD/XToolMobileApp.app"
@@ -26,6 +28,16 @@ rm -rf "$STAGE" "$IPA"
 mkdir -p "$APP"
 cp "$EXECUTABLE" "$APP/XToolMobileApp"
 chmod 0755 "$APP/XToolMobileApp"
+
+if [[ "$EMBED_RUNTIME" == "1" ]]; then
+  if [[ -d "$RUNTIME/Developer/Platforms/iPhoneOS.platform" ]]; then
+    echo "Embedding prepared iPhoneOS runtime into app bundle..."
+    cp -a "$RUNTIME" "$APP/MobileRuntime"
+  else
+    echo "warning: .build/XToolMobileRuntime is missing; packaging without bundled runtime" >&2
+    echo "Run: bash scripts/prepare-mobile-runtime.sh" >&2
+  fi
+fi
 
 cat > "$APP/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -81,14 +93,14 @@ EOF
 if command -v zip >/dev/null 2>&1; then
   (
     cd "$STAGE"
-    zip -qry "$IPA" Payload
+    zip -qry -y "$IPA" Payload
   )
 elif command -v python3 >/dev/null 2>&1; then
   python3 - "$STAGE" "$IPA" <<'PY'
 import os, sys, zipfile
 stage, ipa = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(ipa, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-    for root, _, files in os.walk(os.path.join(stage, 'Payload')):
+    for root, dirs, files in os.walk(os.path.join(stage, 'Payload')):
         for name in files:
             path = os.path.join(root, name)
             zf.write(path, os.path.relpath(path, stage))
