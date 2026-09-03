@@ -8,18 +8,16 @@ DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
 
 # Default mobile distribution mode: keep the Darwin SDK bundled in the IPA as
-# ONE opaque zip file. Signers therefore do not recursively inspect SDK dylibs,
+# ONE opaque TAR file. Signers therefore do not recursively inspect SDK dylibs,
 # while xtool can unpack the archive into Application Support on first launch.
 BUNDLE_RUNTIME_ARCHIVE="${BUNDLE_RUNTIME_ARCHIVE:-1}"
-# Expanded embedding is retained only as a debugging option because some iOS
-# signing tools try to sign every dylib they discover under the app bundle.
 EMBED_RUNTIME_EXPANDED="${EMBED_RUNTIME_EXPANDED:-0}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
 EXECUTABLE="$BUILD_DIR/XToolMobileApp"
 RUNTIME="$ROOT/.build/XToolMobileRuntime"
-RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.zip"
+RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
 STAGE="$ROOT/.build/mobile-package"
 PAYLOAD="$STAGE/Payload"
 APP="$PAYLOAD/XToolMobileApp.app"
@@ -39,8 +37,8 @@ chmod 0755 "$APP/XToolMobileApp"
 
 if [[ "$BUNDLE_RUNTIME_ARCHIVE" == "1" ]]; then
   if [[ -f "$RUNTIME_ARCHIVE" ]]; then
-    echo "Bundling Darwin runtime as signer-safe MobileRuntime.zip..."
-    cp "$RUNTIME_ARCHIVE" "$APP/MobileRuntime.zip"
+    echo "Bundling Darwin runtime as signer-safe MobileRuntime.tar..."
+    cp "$RUNTIME_ARCHIVE" "$APP/MobileRuntime.tar"
   else
     echo "warning: $RUNTIME_ARCHIVE is missing" >&2
     echo "Run: bash scripts/prepare-mobile-runtime.sh" >&2
@@ -110,9 +108,6 @@ EOF
 if command -v zip >/dev/null 2>&1; then
   (
     cd "$STAGE"
-    # The outer IPA zip may compress MobileRuntime.zip poorly because it is
-    # already compressed, but leaving it nested prevents signers from walking
-    # the SDK's dylib tree.
     zip -qry -y "$IPA" Payload
   )
 elif command -v python3 >/dev/null 2>&1; then
