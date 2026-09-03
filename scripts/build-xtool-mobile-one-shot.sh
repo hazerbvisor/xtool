@@ -11,6 +11,8 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
 IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
+COMPILER_CONFIG_REV="ios-rpath-clang-shared-off-v1"
+COMPILER_CONFIG_STAMP="$WORK_ROOT/.xtool-compiler-config-rev"
 
 mkdir -p "$ROOT/.build"
 
@@ -29,6 +31,13 @@ with zipfile.ZipFile(ipa) as zf:
 PY
 }
 
+compiler_config_is_current() {
+  [[ -f "$BUILD_ROOT/build.ninja" ]] || return 1
+  [[ -f "$COMPILER_CONFIG_STAMP" ]] || return 1
+  [[ "$(cat "$COMPILER_CONFIG_STAMP" 2>/dev/null || true)" == "$COMPILER_CONFIG_REV" ]] || return 1
+  grep -q 'XToolCompilerEngine' "$BUILD_ROOT/build.ninja"
+}
+
 run_all() {
   cd "$ROOT"
 
@@ -45,12 +54,13 @@ run_all() {
     file "$ENGINE" 2>/dev/null || true
     ls -lh "$ENGINE"
   else
-    if [[ -f "$BUILD_ROOT/build.ninja" ]] && grep -q 'XToolCompilerEngine' "$BUILD_ROOT/build.ninja"; then
+    if compiler_config_is_current; then
       echo '=== compiler configure ==='
-      echo 'cache hit: CMake graph already contains XToolCompilerEngine'
+      echo 'cache hit: current CMake graph already contains XToolCompilerEngine'
     else
       echo '=== compiler configure ==='
       bash scripts/run-mobile-compiler-engine.sh configure
+      printf '%s\n' "$COMPILER_CONFIG_REV" > "$COMPILER_CONFIG_STAMP"
     fi
 
     echo '=== compiler build ==='
@@ -99,7 +109,10 @@ run_all() {
 }
 
 set +e
-run_all 2>&1 | tee "$LOG"
+(
+  set -e
+  run_all
+) 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
 set -e
 
