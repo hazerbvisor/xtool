@@ -99,13 +99,35 @@ clone_release() {
   die "failed to clone $label after 3 attempts"
 }
 
+patch_swift_cmark_lookup() {
+  local file="$SRC_ROOT/swift/CMakeLists.txt"
+  python3 - "$file" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = 'elseif(SWIFT_INCLUDE_TOOLS)\n  find_package(cmark-gfm CONFIG REQUIRED)'
+new = 'elseif(SWIFT_INCLUDE_TOOLS AND NOT "cmark" IN_LIST LLVM_EXTERNAL_PROJECTS)\n  find_package(cmark-gfm CONFIG REQUIRED)'
+if new in s:
+    print('Swift cmark external-project guard: already applied')
+elif old in s:
+    p.write_text(s.replace(old, new, 1))
+    print('Swift cmark external-project guard: applied')
+else:
+    raise SystemExit('error: expected Swift cmark lookup block not found')
+PY
+}
+
 prepare_sources() {
   section "source preparation"
   mkdir -p "$SRC_ROOT"
   clone_release https://github.com/swiftlang/swift.git "$SRC_ROOT/swift" Swift
   clone_release https://github.com/swiftlang/llvm-project.git "$SRC_ROOT/llvm-project" LLVM/Clang
+  clone_release https://github.com/swiftlang/swift-cmark.git "$SRC_ROOT/cmark" Swift-cmark
+  patch_swift_cmark_lookup
   echo "Swift HEAD:"; git -C "$SRC_ROOT/swift" log -1 --oneline
   echo "LLVM HEAD:"; git -C "$SRC_ROOT/llvm-project" log -1 --oneline
+  echo "cmark HEAD:"; git -C "$SRC_ROOT/cmark" log -1 --oneline
 }
 
 prepare_native_tools() {
@@ -133,15 +155,14 @@ configure_engine() {
   echo "clang-tblgen:       $CLANG_TBLGEN"
   echo "install-name-tool:  ${INSTALL_NAME_TOOL:-MISSING}"
   echo "Swift check:        forced valid for cross-compile"
+  echo "cmark:              in-tree arm64 iOS external project"
   echo "LLVM host tools:    excluded from install/build"
   echo "jobs later:         $JOBS"
 
   [[ -n "$INSTALL_NAME_TOOL" ]] || die "llvm-install-name-tool not found. Install Debian LLVM tools and rerun."
 
-  # Configuration is cheap; always discard only the failed CMake output while
-  # preserving the downloaded Swift/LLVM sources.
   rm -rf "$BUILD_ROOT"
-  mkdir -p "$BUILD_ROOT" "$WORK_ROOT/empty-cmark" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
+  mkdir -p "$BUILD_ROOT" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
 
   "$CMAKE" -S "$SRC_ROOT/llvm-project/llvm" -B "$BUILD_ROOT" -G Ninja \
     -DCMAKE_MAKE_PROGRAM="$NINJA" \
@@ -163,8 +184,11 @@ configure_engine() {
     -DCMAKE_AR="$LLVM_AR" \
     -DCMAKE_RANLIB="$LLVM_RANLIB" \
     -DCMAKE_INSTALL_NAME_TOOL="$INSTALL_NAME_TOOL" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_TESTING=OFF \
     -DLLVM_ENABLE_PROJECTS=clang \
-    -DLLVM_EXTERNAL_PROJECTS=swift \
+    -DLLVM_EXTERNAL_PROJECTS="cmark;swift" \
+    -DLLVM_EXTERNAL_CMARK_SOURCE_DIR="$SRC_ROOT/cmark" \
     -DLLVM_EXTERNAL_SWIFT_SOURCE_DIR="$SRC_ROOT/swift" \
     -DLLVM_TARGETS_TO_BUILD=AArch64 \
     -DLLVM_HOST_TRIPLE="$TARGET" \
@@ -216,8 +240,6 @@ configure_engine() {
     -DSWIFT_BUILD_STATIC_SDK_OVERLAY=OFF \
     -DSWIFT_BUILD_STDLIB_EXTRA_TOOLCHAIN_CONTENT=OFF \
     -DSWIFT_BUILD_PERF_TESTSUITE=OFF \
-    -DCMARK_MAIN_INCLUDE_DIR="$WORK_ROOT/empty-cmark" \
-    -DCMARK_BUILD_INCLUDE_DIR="$BUILD_ROOT/cmark" \
     -DSWIFT_PATH_TO_STRING_PROCESSING_SOURCE="$WORK_ROOT/empty-string-processing" \
     -DSWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE="$WORK_ROOT/empty-swift-syntax"
 
