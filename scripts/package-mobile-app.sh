@@ -8,6 +8,7 @@ DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
 BUNDLE_RUNTIME_ARCHIVE="${BUNDLE_RUNTIME_ARCHIVE:-1}"
 EMBED_RUNTIME_EXPANDED="${EMBED_RUNTIME_EXPANDED:-0}"
+REQUIRE_COMPILER_ENGINE="${REQUIRE_COMPILER_ENGINE:-0}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
@@ -40,6 +41,10 @@ if [[ -f "$COMPILER_ENGINE_DYLIB" ]]; then
   chmod 0755 "$APP/Frameworks/libXToolCompilerEngine.dylib"
   ENGINE_BUNDLED=1
 else
+  if [[ "$REQUIRE_COMPILER_ENGINE" == "1" ]]; then
+    echo "error: required compiler engine is missing: $COMPILER_ENGINE_DYLIB" >&2
+    exit 1
+  fi
   echo "Compiler engine not bundled yet (frontend planning/probes remain usable)."
   echo "Expected optional engine at: $COMPILER_ENGINE_DYLIB"
 fi
