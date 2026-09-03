@@ -26,12 +26,17 @@ target_link_libraries(XToolCompilerEngine PRIVATE
   swiftFrontendTool
 )
 
+# Linux-hosted CMake's iOS platform configuration does not populate
+# CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG. Asking CMake itself for an @rpath install
+# name therefore fails during generation. Build the dylib without CMake-managed
+# runtime paths and let the bootstrap script set the final Mach-O install name
+# with llvm-install-name-tool after linking.
 set_target_properties(XToolCompilerEngine PROPERTIES
   OUTPUT_NAME "XToolCompilerEngine"
   PREFIX "lib"
   POSITION_INDEPENDENT_CODE ON
-  MACOSX_RPATH ON
-  BUILD_WITH_INSTALL_RPATH ON
-  INSTALL_NAME_DIR "@rpath"
+  BUILD_WITH_INSTALL_RPATH OFF
+  SKIP_BUILD_RPATH TRUE
+  INSTALL_RPATH ""
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/../package"
 )
