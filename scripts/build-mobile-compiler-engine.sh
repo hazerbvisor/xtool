@@ -161,6 +161,7 @@ configure_engine() {
   echo "Swift check:        forced valid for cross-compile"
   echo "cmark:              in-tree arm64 iOS external project"
   echo "XTool engine:       in-tree final dylib target"
+  echo "Clang shared tools: disabled (libclang, IndexStore, clang-shlib)"
   echo "LLVM host tools:    excluded from install/build"
   echo "jobs later:         $JOBS"
 
@@ -220,6 +221,9 @@ configure_engine() {
     -DLLVM_ENABLE_ZLIB=OFF \
     -DLLVM_ENABLE_ZSTD=OFF \
     -DCLANG_BUILD_TOOLS=OFF \
+    -DCLANG_TOOL_LIBCLANG_BUILD=OFF \
+    -DCLANG_TOOL_INDEXSTORE_BUILD=OFF \
+    -DCLANG_TOOL_CLANG_SHLIB_BUILD=OFF \
     -DCLANG_ENABLE_ARCMT=OFF \
     -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
     -DSWIFT_HOST_VARIANT=iphoneos \
@@ -267,6 +271,10 @@ build_engine() {
 
   section "compiler engine result"
   [[ -f "$ENGINE_DYLIB" ]] || die "build completed but compiler engine dylib was not produced: $ENGINE_DYLIB"
+
+  echo "Setting Mach-O install name to @rpath/libXToolCompilerEngine.dylib"
+  "$INSTALL_NAME_TOOL" -id "@rpath/libXToolCompilerEngine.dylib" "$ENGINE_DYLIB"
+
   file "$ENGINE_DYLIB" || true
   du -h "$ENGINE_DYLIB" | awk '{print "size: "$1}'
   echo "SUCCESS: $ENGINE_DYLIB"
