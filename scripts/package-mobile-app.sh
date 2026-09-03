@@ -6,10 +6,6 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 BUNDLE_ID="${BUNDLE_ID:-sh.xtool.mobile}"
 DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
-
-# Default mobile distribution mode: keep the Darwin SDK bundled in the IPA as
-# ONE opaque TAR file. Signers therefore do not recursively inspect SDK dylibs,
-# while xtool can unpack the archive into Application Support on first launch.
 BUNDLE_RUNTIME_ARCHIVE="${BUNDLE_RUNTIME_ARCHIVE:-1}"
 EMBED_RUNTIME_EXPANDED="${EMBED_RUNTIME_EXPANDED:-0}"
 
@@ -18,10 +14,12 @@ BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
 EXECUTABLE="$BUILD_DIR/XToolMobileApp"
 RUNTIME="$ROOT/.build/XToolMobileRuntime"
 RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
+COMPILER_ENGINE_DYLIB="${COMPILER_ENGINE_DYLIB:-$ROOT/.build/mobile-compiler-engine/package/libXToolCompilerEngine.dylib}"
 STAGE="$ROOT/.build/mobile-package"
 PAYLOAD="$STAGE/Payload"
 APP="$PAYLOAD/XToolMobileApp.app"
 IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
+ENGINE_BUNDLED=0
 
 if [[ ! -f "$EXECUTABLE" ]]; then
   echo "error: missing executable: $EXECUTABLE" >&2
@@ -34,6 +32,17 @@ rm -rf "$STAGE" "$IPA"
 mkdir -p "$APP"
 cp "$EXECUTABLE" "$APP/XToolMobileApp"
 chmod 0755 "$APP/XToolMobileApp"
+
+if [[ -f "$COMPILER_ENGINE_DYLIB" ]]; then
+  echo "Bundling in-process Swift compiler engine..."
+  mkdir -p "$APP/Frameworks"
+  cp "$COMPILER_ENGINE_DYLIB" "$APP/Frameworks/libXToolCompilerEngine.dylib"
+  chmod 0755 "$APP/Frameworks/libXToolCompilerEngine.dylib"
+  ENGINE_BUNDLED=1
+else
+  echo "Compiler engine not bundled yet (frontend planning/probes remain usable)."
+  echo "Expected optional engine at: $COMPILER_ENGINE_DYLIB"
+fi
 
 if [[ "$BUNDLE_RUNTIME_ARCHIVE" == "1" ]]; then
   if [[ -f "$RUNTIME_ARCHIVE" ]]; then
@@ -74,9 +83,9 @@ cat > "$APP/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2</string>
+    <string>0.3</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>MinimumOSVersion</key>
@@ -130,6 +139,8 @@ Created unsigned IPA:
   $IPA
 
 Signing: intentionally unsigned; no provisioning profile included.
+Compiler engine bundled: $ENGINE_BUNDLED
+Compiler engine path: $COMPILER_ENGINE_DYLIB
 Bundled runtime archive: $BUNDLE_RUNTIME_ARCHIVE
 Expanded runtime: $EMBED_RUNTIME_EXPANDED
 EOF
