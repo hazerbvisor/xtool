@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Desktop xtool currently executes SwiftPM and compiler tools as subprocesses.
 /// iOS/iPadOS cannot assume that model, so the mobile port talks to a backend
-/// that may execute a compiler in-process instead.
+/// that executes compiler and linker functionality in-process instead.
 public struct MobileBuildRequest: Sendable, Hashable {
     public enum Tool: String, Sendable, Hashable {
         case swiftPackage
@@ -52,9 +52,9 @@ public struct MobileBuildResult: Sendable, Hashable {
 
 /// Compiler/build execution boundary for the iOS/iPadOS port.
 ///
-/// The first implementation can be Haze-specific. A later implementation can
-/// expose the complete xtool/SwiftPM behaviour without changing the UI or
-/// packaging layers.
+/// Implementations are generic XTool Mobile backends. The first backend uses
+/// the bundled Swift FrontendTool bridge; later backends add Clang, linking and
+/// SwiftPM-compatible planning without changing the UI or packaging layers.
 public protocol MobileBuildBackend: Sendable {
     func run(_ request: MobileBuildRequest) async throws -> MobileBuildResult
 }
