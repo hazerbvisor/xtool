@@ -39,6 +39,10 @@ let package = Package(
             targets: ["XToolMobileCore"]
         ),
         .executable(
+            name: "XToolMobileApp",
+            targets: ["XToolMobileApp"]
+        ),
+        .executable(
             name: "xtool",
             targets: ["xtool"]
         ),
@@ -111,6 +115,11 @@ let package = Package(
         .target(
             name: "XToolMobileCore",
             dependencies: []
+        ),
+        .executableTarget(
+            name: "XToolMobileApp",
+            dependencies: ["XToolMobileCore"],
+            exclude: ["README.md"]
         ),
         .target(
             name: "XKit",
