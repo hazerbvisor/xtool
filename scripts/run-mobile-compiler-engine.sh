@@ -60,7 +60,6 @@ if [[ -n "$INSTALL_NAME_TOOL" ]]; then
   ln -sfn "$INSTALL_NAME_TOOL" "$SHIM_DIR/llvm-install-name-tool"
 fi
 
-# Keep commonly needed host tools reachable from the same shim directory.
 for name in llvm-tblgen clang-tblgen llvm-ar llvm-ranlib llvm-config llvm-profdata; do
   tool="$(find_tool "$name" "$name*" || true)"
   if [[ -n "$tool" ]]; then
@@ -76,8 +75,20 @@ printf '  mode:              %s\n' "$MODE"
 printf '  full log:          %s\n\n' "$LOG_FILE"
 
 cd "$ROOT"
+
+run_engine() {
+  if [[ "$MODE" == "configure" ]]; then
+    echo '=== prepare + iOS compatibility patches ==='
+    env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh prepare
+    bash scripts/patch-mobile-compiler-ios-sources.sh
+    echo
+  fi
+
+  env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh "$MODE"
+}
+
 set +e
-env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh "$MODE" 2>&1 | tee "$LOG_FILE"
+run_engine 2>&1 | tee "$LOG_FILE"
 status=${PIPESTATUS[0]}
 set -e
 
