@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SHIM_DIR="$ROOT/.build/hazebuilder-mobile-tools"
-mkdir -p "$SHIM_DIR"
+MODE="${1:-build}"
+LOG_FILE="$ROOT/.build/hazebuilder-${MODE}.log"
+mkdir -p "$SHIM_DIR" "$ROOT/.build"
 
 # Haze's upstream Makefile requires ldid even when we intentionally export an
 # unsigned IPA. On Android/Linux the final IPA is re-signed later with
@@ -46,7 +48,16 @@ printf '  vtool: Linux Mach-O platform patcher\n'
 if [[ ${#extra[@]} -gt 0 ]]; then
   printf '  Haze:   %s\n' "${extra[1]}"
 fi
-printf '\n'
+printf '  log:    %s\n\n' "$LOG_FILE"
 
-exec env PATH="$SHIM_DIR:$PATH" \
-  bash "$ROOT/HazeBuilder/hazebuilder.sh" "$@" "${extra[@]}"
+set +e
+env PATH="$SHIM_DIR:$PATH" \
+  bash "$ROOT/HazeBuilder/hazebuilder.sh" "$@" "${extra[@]}" 2>&1 | tee "$LOG_FILE"
+status=${PIPESTATUS[0]}
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf '\nHazeBuilder failed (exit %d). Full log saved to:\n  %s\n' "$status" "$LOG_FILE" >&2
+fi
+
+exit "$status"
