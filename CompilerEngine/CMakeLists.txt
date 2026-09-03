@@ -6,6 +6,15 @@ if(NOT TARGET swiftFrontendTool)
   message(FATAL_ERROR "XToolCompilerEngine requires the Swift swiftFrontendTool target")
 endif()
 
+# We configure the iOS target from a Linux host. LLVM's generic host options
+# treat CMAKE_SYSTEM_NAME=iOS as non-Darwin in a few places, which can leak the
+# ELF-only -Wl,-z,defs flag into shared-library links. Strip that flag only in
+# this external-project directory; all of the Swift/Clang/LLVM dependencies we
+# consume here are already-built static archives.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
+endif()
+
 add_library(XToolCompilerEngine SHARED
   XToolCompilerEngine.cpp
 )
@@ -25,6 +34,13 @@ target_compile_definitions(XToolCompilerEngine PRIVATE
 target_link_libraries(XToolCompilerEngine PRIVATE
   swiftFrontendTool
 )
+
+# The Linux Swift/Clang driver otherwise falls back to /usr/bin/ld even for an
+# Apple target. -fuse-ld=lld makes Clang select its Mach-O linker (ld64.lld)
+# from the Swift toolchain for this final iOS dylib link.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=lld")
+endif()
 
 # Linux-hosted CMake's iOS platform configuration does not populate
 # CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG. Asking CMake itself for an @rpath install
