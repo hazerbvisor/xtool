@@ -22,26 +22,21 @@ rm -rf "$OUT_ROOT" "$ARCHIVE"
 mkdir -p "$OUT_DEVELOPER/Platforms"
 mkdir -p "$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift"
 
-# Target platform SDK: frameworks, headers, module maps, and stubs for iPhoneOS.
 cp -a "$DEVELOPER/Platforms/iPhoneOS.platform" "$OUT_DEVELOPER/Platforms/"
 
-# Swift target runtime/modules needed for arm64-apple-ios compilation.
 cp -a "$TOOLCHAIN/usr/lib/swift/iphoneos" \
   "$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/"
 
-# Compiler shims are referenced by Swift's standard library/module interfaces.
 if [[ -d "$TOOLCHAIN/usr/lib/swift/shims" ]]; then
   cp -a "$TOOLCHAIN/usr/lib/swift/shims" \
     "$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/"
 fi
 
-# Some Swift/Clang importer paths expect Swift's bundled clang support tree.
 if [[ -d "$TOOLCHAIN/usr/lib/swift/clang" ]]; then
   cp -a "$TOOLCHAIN/usr/lib/swift/clang" \
     "$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/"
 fi
 
-# Copy the newest Clang resource directory (builtin headers such as stddef.h).
 if [[ -d "$TOOLCHAIN/usr/lib/clang" ]]; then
   CLANG_RESOURCE="$(find "$TOOLCHAIN/usr/lib/clang" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1 || true)"
   if [[ -n "$CLANG_RESOURCE" ]]; then
@@ -65,11 +60,14 @@ du -sh "$OUT_ROOT"
 if command -v tar >/dev/null 2>&1; then
   (
     cd "$(dirname "$OUT_ROOT")"
-    # USTAR keeps the archive simple enough for the tiny in-app extractor while
-    # preserving directories and symlinks. No network/archive Swift package needed.
-    tar --format=ustar -cf "$ARCHIVE" "$(basename "$OUT_ROOT")"
+    # Apple SDKs contain individual filenames longer than classic USTAR's
+    # 100-byte name field. PAX stores those paths in extended headers while
+    # keeping the archive dependency-free and readable by xtool's tiny extractor.
+    tar --format=pax \
+      --pax-option=delete=atime,delete=ctime \
+      -cf "$ARCHIVE" "$(basename "$OUT_ROOT")"
   )
-  echo "Created runtime archive:"
+  echo "Created PAX runtime archive:"
   ls -lh "$ARCHIVE"
 else
   echo "error: tar is required to prepare the bundled runtime" >&2
