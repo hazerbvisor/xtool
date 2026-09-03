@@ -267,7 +267,7 @@ build_engine() {
   section "build XToolCompilerEngine dylib"
   echo "Using $JOBS parallel jobs to reduce memory pressure."
   echo "CMake will build only the dependency closure required by the final engine."
-  "$CMAKE" --build "$BUILD_ROOT" --target XToolCompilerEngine -- --jobs="$JOBS"
+  "$CMAKE" --build "$BUILD_ROOT" --target XToolCompilerEngine -- -j "$JOBS"
 
   section "compiler engine result"
   [[ -f "$ENGINE_DYLIB" ]] || die "build completed but compiler engine dylib was not produced: $ENGINE_DYLIB"
