@@ -76,7 +76,6 @@ let package = Package(
         .package(url: "https://github.com/mxcl/Version", from: "2.1.0"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.1.3"),
         .package(url: "https://github.com/saagarjha/unxip", from: "3.2.0"),
-        .package(url: "https://github.com/weichsel/ZIPFoundation", from: "0.9.19"),
 
         // TODO: just depend on tuist/XcodeProj instead
         .package(url: "https://github.com/yonaskolb/XcodeGen", from: "2.45.4"),
@@ -119,10 +118,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "XToolMobileApp",
-            dependencies: [
-                "XToolMobileCore",
-                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-            ],
+            dependencies: ["XToolMobileCore"],
             exclude: ["README.md"]
         ),
         .target(
