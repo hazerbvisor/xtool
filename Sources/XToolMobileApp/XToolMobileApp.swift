@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import XToolMobileCore
+import ZIPFoundation
 
 @main
 struct XToolMobileApp: App {
@@ -16,12 +17,15 @@ private struct MobileHomeView: View {
 
     @State private var project: MobileProject?
     @State private var toolchain: PreparedToolchain?
+    @State private var helloPlan: MobileCompilerPlan?
     @State private var projectScopeURL: URL?
     @State private var toolchainScopeURL: URL?
+    @State private var toolchainSource = "None"
     @State private var showingProjectImporter = false
     @State private var showingToolchainImporter = false
     @State private var logLines: [String] = ["xtool mobile ready"]
     @State private var attemptedBundledRuntimeDiscovery = false
+    @State private var isPreparingBundledRuntime = false
 
     var body: some View {
         NavigationStack {
@@ -38,28 +42,34 @@ private struct MobileHomeView: View {
                         LabeledContent("Package.swift", value: "Found")
                         LabeledContent("xtool.yml", value: project.hasXToolConfiguration ? "Found" : "Not present")
                     } else {
-                        Text("Project import is optional for the compiler probe. The first Hello.swift test will run from xtool's own sandbox.")
+                        Text("Project import is optional for the first compiler test. Hello.swift runs from xtool's sandbox.")
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section("Darwin SDK") {
+                    if isPreparingBundledRuntime {
+                        HStack {
+                            ProgressView()
+                            Text("Unpacking bundled runtime…")
+                        }
+                    }
+
                     if let toolchain {
-                        LabeledContent("Source", value: toolchainScopeURL == nil ? "Bundled in IPA" : "Files")
-                        LabeledContent("Developer", value: toolchain.developerDirectory.lastPathComponent)
+                        LabeledContent("Source", value: toolchainSource)
                         LabeledContent("iPhoneOS SDK", value: sdkDisplayName(toolchain))
                         LabeledContent(
                             "Standalone frontend",
                             value: toolchain.hasBundledSwiftFrontend ? "Present" : "Not required"
                         )
-                    } else {
+                    } else if !isPreparingBundledRuntime {
                         Button {
                             showingToolchainImporter = true
                         } label: {
                             Label("Import External Darwin SDK", systemImage: "shippingbox")
                         }
 
-                        Text("No bundled runtime was found. Repackage after running scripts/prepare-mobile-runtime.sh, or import an external Darwin SDK folder.")
+                        Text("No usable bundled runtime was found. You can still import the prepared runtime from Files.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -72,7 +82,8 @@ private struct MobileHomeView: View {
                     }
                     .disabled(toolchain == nil)
 
-                    LabeledContent("Compiler bridge", value: "Next milestone")
+                    LabeledContent("Execution", value: MobileCompilerBridgeContract.executionModel)
+                    LabeledContent("Backend", value: "FrontendTool")
                     LabeledContent("Architecture", value: capabilities.architecture)
                     LabeledContent("iOS family", value: capabilities.isRunningOnIOSFamily ? "Yes" : "No")
                     LabeledContent(
@@ -84,6 +95,24 @@ private struct MobileHomeView: View {
                     )
                 }
 
+                Section("Hello.swift AOT Job") {
+                    Button {
+                        prepareHelloCompilerJob()
+                    } label: {
+                        Label("Prepare Hello.swift", systemImage: "hammer.circle")
+                    }
+                    .disabled(toolchain == nil)
+
+                    if let helloPlan {
+                        LabeledContent("Target", value: helloPlan.targetTriple)
+                        LabeledContent("Source", value: helloPlan.sourceURL.lastPathComponent)
+                        LabeledContent("Output", value: helloPlan.objectURL.lastPathComponent)
+                        Text("The next native bridge milestone executes this prepared frontend job in-process and produces Hello.o.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Build Log") {
                     ScrollView {
                         Text(logLines.joined(separator: "\n"))
@@ -92,7 +121,7 @@ private struct MobileHomeView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 4)
                     }
-                    .frame(minHeight: 180)
+                    .frame(minHeight: 220)
                 }
             }
             .navigationTitle("xtool")
@@ -120,27 +149,76 @@ private struct MobileHomeView: View {
         guard !attemptedBundledRuntimeDiscovery else { return }
         attemptedBundledRuntimeDiscovery = true
 
-        guard let resourceURL = Bundle.main.resourceURL else {
-            appendLog("bundled runtime: app resource URL unavailable")
+        let fileManager = FileManager.default
+        guard let applicationSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            appendLog("bundled runtime: Application Support unavailable")
             return
         }
 
-        let root = resourceURL.appendingPathComponent("MobileRuntime", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: root.path) else {
-            appendLog("bundled runtime: not present")
-            return
-        }
+        let extractedRoot = applicationSupport.appendingPathComponent(
+            "XToolMobileRuntime",
+            isDirectory: true
+        )
 
-        do {
-            let selected = PreparedToolchain(root: root)
-            try selected.validate()
-            let sdk = try selected.iPhoneOSSDK()
-            toolchain = selected
+        // Fast path for every launch after the first successful extraction.
+        let existing = PreparedToolchain(root: extractedRoot)
+        if (try? existing.validate()) != nil {
+            toolchain = existing
             toolchainScopeURL = nil
-            appendLog("bundled Darwin runtime: valid")
-            appendLog("SDK: \(sdk.lastPathComponent)")
-        } catch {
-            appendLog("bundled runtime invalid: \(String(describing: error))")
+            toolchainSource = "Bundled archive"
+            appendLog("bundled runtime cache: valid")
+            appendLog("SDK: \(sdkDisplayName(existing))")
+            return
+        }
+
+        guard let archiveURL = Bundle.main.url(
+            forResource: "MobileRuntime",
+            withExtension: "zip"
+        ) else {
+            appendLog("bundled runtime archive: not present")
+            return
+        }
+
+        isPreparingBundledRuntime = true
+        appendLog("bundled runtime archive: found")
+        appendLog("bundled runtime: extracting to Application Support...")
+
+        Task {
+            do {
+                let selected = try await Task.detached(priority: .userInitiated) {
+                    let fileManager = FileManager.default
+                    try fileManager.createDirectory(
+                        at: applicationSupport,
+                        withIntermediateDirectories: true
+                    )
+
+                    if fileManager.fileExists(atPath: extractedRoot.path) {
+                        try fileManager.removeItem(at: extractedRoot)
+                    }
+
+                    try fileManager.unzipItem(
+                        at: archiveURL,
+                        to: applicationSupport
+                    )
+
+                    let selected = PreparedToolchain(root: extractedRoot)
+                    try selected.validate()
+                    return selected
+                }.value
+
+                toolchain = selected
+                toolchainScopeURL = nil
+                toolchainSource = "Bundled archive"
+                isPreparingBundledRuntime = false
+                appendLog("bundled runtime: extracted + valid")
+                appendLog("SDK: \(sdkDisplayName(selected))")
+            } catch {
+                isPreparingBundledRuntime = false
+                appendLog("bundled runtime extraction failed: \(String(describing: error))")
+            }
         }
     }
 
@@ -172,6 +250,7 @@ private struct MobileHomeView: View {
             let sdk = try selected.iPhoneOSSDK()
             toolchain = selected
             toolchainScopeURL = url
+            toolchainSource = "Files"
             appendLog("external Darwin SDK tree: valid")
             appendLog("SDK: \(sdk.lastPathComponent)")
         } catch {
@@ -198,6 +277,45 @@ private struct MobileHomeView: View {
             appendLog(reserved ? "probe: READY for embedded compiler bridge" : "probe: memory capability needs investigation")
         } catch {
             appendLog("probe failed: \(String(describing: error))")
+        }
+    }
+
+    private func prepareHelloCompilerJob() {
+        guard let toolchain else {
+            appendLog("hello: no Darwin SDK selected")
+            return
+        }
+
+        do {
+            guard let applicationSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first else {
+                appendLog("hello: Application Support unavailable")
+                return
+            }
+
+            let workspace = applicationSupport.appendingPathComponent(
+                "CompilerProbe",
+                isDirectory: true
+            )
+            let plan = try MobileCompilerPlan.helloWorld(
+                toolchain: toolchain,
+                workspace: workspace
+            )
+            helloPlan = plan
+
+            appendLog("hello: source written: \(plan.sourceURL.path)")
+            appendLog("hello: target: \(plan.targetTriple)")
+            appendLog("hello: output: \(plan.objectURL.path)")
+            appendLog("hello: frontend job prepared")
+            appendLog("hello argv:")
+            for argument in plan.arguments {
+                appendLog("  \(argument)")
+            }
+            appendLog("hello: awaiting native performFrontend bridge")
+        } catch {
+            appendLog("hello preparation failed: \(String(describing: error))")
         }
     }
 
