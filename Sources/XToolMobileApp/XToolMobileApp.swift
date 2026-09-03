@@ -17,6 +17,8 @@ private struct MobileHomeView: View {
     @State private var project: MobileProject?
     @State private var toolchain: PreparedToolchain?
     @State private var helloPlan: MobileCompilerPlan?
+    @State private var compilerEngine: MobileCompilerEngine?
+    @State private var compilerEngineStatus = "Not bundled"
     @State private var projectScopeURL: URL?
     @State private var toolchainScopeURL: URL?
     @State private var toolchainSource = "None"
@@ -24,7 +26,9 @@ private struct MobileHomeView: View {
     @State private var showingToolchainImporter = false
     @State private var logLines: [String] = ["xtool mobile ready"]
     @State private var attemptedBundledRuntimeDiscovery = false
+    @State private var attemptedCompilerEngineDiscovery = false
     @State private var isPreparingBundledRuntime = false
+    @State private var isCompilingHello = false
 
     var body: some View {
         NavigationStack {
@@ -83,6 +87,7 @@ private struct MobileHomeView: View {
 
                     LabeledContent("Execution", value: MobileCompilerBridgeContract.executionModel)
                     LabeledContent("Backend", value: "FrontendTool")
+                    LabeledContent("Engine", value: compilerEngineStatus)
                     LabeledContent("Architecture", value: capabilities.architecture)
                     LabeledContent("iOS family", value: capabilities.isRunningOnIOSFamily ? "Yes" : "No")
                     LabeledContent(
@@ -100,15 +105,33 @@ private struct MobileHomeView: View {
                     } label: {
                         Label("Prepare Hello.swift", systemImage: "hammer.circle")
                     }
-                    .disabled(toolchain == nil)
+                    .disabled(toolchain == nil || isCompilingHello)
+
+                    Button {
+                        compileHello()
+                    } label: {
+                        if isCompilingHello {
+                            HStack {
+                                ProgressView()
+                                Text("Compiling Hello.swift…")
+                            }
+                        } else {
+                            Label("Compile Hello.swift", systemImage: "play.circle.fill")
+                        }
+                    }
+                    .disabled(helloPlan == nil || compilerEngine == nil || isCompilingHello)
 
                     if let helloPlan {
                         LabeledContent("Target", value: helloPlan.targetTriple)
                         LabeledContent("Source", value: helloPlan.sourceURL.lastPathComponent)
                         LabeledContent("Output", value: helloPlan.objectURL.lastPathComponent)
-                        Text("The next native bridge milestone executes this prepared frontend job in-process and produces Hello.o.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            compilerEngine == nil
+                                ? "The frontend job is ready. Bundle libXToolCompilerEngine.dylib to execute it in-process."
+                                : "Compiler engine is loaded. Compile should produce a real arm64 iOS Hello.o without spawning a process."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     }
                 }
 
@@ -126,6 +149,7 @@ private struct MobileHomeView: View {
             .navigationTitle("xtool")
         }
         .onAppear {
+            discoverCompilerEngineIfNeeded()
             discoverBundledRuntimeIfNeeded()
         }
         .fileImporter(
@@ -141,6 +165,24 @@ private struct MobileHomeView: View {
             allowsMultipleSelection: false
         ) { result in
             importToolchain(result)
+        }
+    }
+
+    private func discoverCompilerEngineIfNeeded() {
+        guard !attemptedCompilerEngineDiscovery else { return }
+        attemptedCompilerEngineDiscovery = true
+
+        do {
+            let engine = try MobileCompilerEngine.loadFromApplicationBundle()
+            compilerEngine = engine
+            compilerEngineStatus = "Loaded: \(engine.version)"
+            appendLog("compiler engine: loaded")
+            appendLog("compiler engine version: \(engine.version)")
+            appendLog("compiler engine path: \(engine.location.path)")
+        } catch {
+            compilerEngine = nil
+            compilerEngineStatus = "Not bundled"
+            appendLog("compiler engine: not bundled yet")
         }
     }
 
@@ -272,6 +314,11 @@ private struct MobileHomeView: View {
             let reservationBytes = 2 * 1024 * 1024 * 1024
             let reserved = MobilePlatformCapabilities.canReserveAddressSpace(bytes: reservationBytes)
             appendLog("probe: 2 GiB VM reservation \(reserved ? "OK" : "FAILED")")
+            if let compilerEngine {
+                appendLog("probe: compiler engine loaded: \(compilerEngine.version)")
+            } else {
+                appendLog("probe: compiler engine not bundled")
+            }
             appendLog(reserved ? "probe: READY for embedded compiler bridge" : "probe: memory capability needs investigation")
         } catch {
             appendLog("probe failed: \(String(describing: error))")
@@ -311,9 +358,59 @@ private struct MobileHomeView: View {
             for argument in plan.arguments {
                 appendLog("  \(argument)")
             }
-            appendLog("hello: awaiting native performFrontend bridge")
+            appendLog(
+                compilerEngine == nil
+                    ? "hello: awaiting bundled compiler engine"
+                    : "hello: ready to execute performFrontend in-process"
+            )
         } catch {
             appendLog("hello preparation failed: \(String(describing: error))")
+        }
+    }
+
+    private func compileHello() {
+        guard let plan = helloPlan else {
+            appendLog("compile: prepare Hello.swift first")
+            return
+        }
+        guard let engine = compilerEngine else {
+            appendLog("compile: compiler engine is not bundled")
+            return
+        }
+
+        isCompilingHello = true
+        appendLog("compile: entering in-process Swift frontend...")
+
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try engine.run(plan)
+                }.value
+
+                guard result.succeeded else {
+                    appendLog("compile: frontend exited with code \(result.exitCode)")
+                    isCompilingHello = false
+                    return
+                }
+
+                guard FileManager.default.fileExists(atPath: plan.objectURL.path) else {
+                    appendLog("compile: frontend returned success but Hello.o is missing")
+                    isCompilingHello = false
+                    return
+                }
+
+                let attributes = try FileManager.default.attributesOfItem(
+                    atPath: plan.objectURL.path
+                )
+                let byteCount = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                appendLog("compile: SUCCESS")
+                appendLog("compile: Hello.o produced (\(byteCount) bytes)")
+                appendLog("compile: \(plan.objectURL.path)")
+                isCompilingHello = false
+            } catch {
+                appendLog("compile failed: \(String(describing: error))")
+                isCompilingHello = false
+            }
         }
     }
 
