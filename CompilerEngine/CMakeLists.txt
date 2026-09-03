@@ -53,11 +53,20 @@ target_link_libraries(XToolCompilerEngine PRIVATE
   swiftFrontendTool
 )
 
-# The Linux Swift/Clang driver otherwise falls back to /usr/bin/ld even for an
-# Apple target. -fuse-ld=lld makes Clang select its Mach-O linker (ld64.lld)
-# from the Swift toolchain for this final iOS dylib link.
+# The Linux Swift/Clang driver otherwise falls back to the host ELF linker. A
+# stock Swift Linux ld64.lld is also intentionally blocked from iOS linking by
+# a downstream Swift LLVM patch, so the repair script can provide a source-
+# matched patched Mach-O linker through this cache variable.
+set(XTOOL_MACHO_LINKER "" CACHE FILEPATH "Patched host ld64.lld used for Linux-to-iOS linking")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
-  target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=lld")
+  if(XTOOL_MACHO_LINKER)
+    if(NOT EXISTS "${XTOOL_MACHO_LINKER}")
+      message(FATAL_ERROR "XTOOL_MACHO_LINKER does not exist: ${XTOOL_MACHO_LINKER}")
+    endif()
+    target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=${XTOOL_MACHO_LINKER}")
+  else()
+    target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=lld")
+  endif()
 endif()
 
 # Linux-hosted CMake's iOS platform configuration does not populate
