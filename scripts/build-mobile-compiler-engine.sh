@@ -2,10 +2,12 @@
 set -euo pipefail
 
 MODE="${1:-configure}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAG="${SWIFT_COMPILER_TAG:-swift-6.3.2-RELEASE}"
-WORK_ROOT="${XTOOL_COMPILER_WORK:-$PWD/.build/mobile-compiler-engine}"
+WORK_ROOT="${XTOOL_COMPILER_WORK:-$REPO_ROOT/.build/mobile-compiler-engine}"
 SRC_ROOT="$WORK_ROOT/src"
 BUILD_ROOT="$WORK_ROOT/build-ios"
+PACKAGE_ROOT="$WORK_ROOT/package"
 NATIVE_ROOT="$WORK_ROOT/native-tools"
 DARWIN_ROOT="${DARWIN_SDK_ROOT:-$HOME/.swiftpm/swift-sdks/darwin.artifactbundle}"
 IOS_PLATFORM="$DARWIN_ROOT/Developer/Platforms/iPhoneOS.platform"
@@ -13,6 +15,7 @@ DARWIN_TOOLCHAIN="$DARWIN_ROOT/Developer/Toolchains/XcodeDefault.xctoolchain"
 DEPLOYMENT="${XTOOL_IOS_DEPLOYMENT_TARGET:-16.0}"
 TARGET="arm64-apple-ios${DEPLOYMENT}"
 JOBS="${XTOOL_COMPILER_JOBS:-2}"
+ENGINE_DYLIB="$PACKAGE_ROOT/libXToolCompilerEngine.dylib"
 
 section() { printf '\n=== %s ===\n' "$1"; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -151,18 +154,20 @@ configure_engine() {
   echo "SDK:                $IOS_SDK"
   echo "Swift tag:          $TAG"
   echo "build dir:          $BUILD_ROOT"
+  echo "engine output:      $ENGINE_DYLIB"
   echo "llvm-tblgen:        $LLVM_TBLGEN"
   echo "clang-tblgen:       $CLANG_TBLGEN"
   echo "install-name-tool:  ${INSTALL_NAME_TOOL:-MISSING}"
   echo "Swift check:        forced valid for cross-compile"
   echo "cmark:              in-tree arm64 iOS external project"
+  echo "XTool engine:       in-tree final dylib target"
   echo "LLVM host tools:    excluded from install/build"
   echo "jobs later:         $JOBS"
 
   [[ -n "$INSTALL_NAME_TOOL" ]] || die "llvm-install-name-tool not found. Install Debian LLVM tools and rerun."
 
-  rm -rf "$BUILD_ROOT"
-  mkdir -p "$BUILD_ROOT" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
+  rm -rf "$BUILD_ROOT" "$PACKAGE_ROOT"
+  mkdir -p "$BUILD_ROOT" "$PACKAGE_ROOT" "$WORK_ROOT/empty-string-processing" "$WORK_ROOT/empty-swift-syntax"
 
   "$CMAKE" -S "$SRC_ROOT/llvm-project/llvm" -B "$BUILD_ROOT" -G Ninja \
     -DCMAKE_MAKE_PROGRAM="$NINJA" \
@@ -173,6 +178,7 @@ configure_engine() {
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT" \
     -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_COMPILER="$CLANG" \
     -DCMAKE_CXX_COMPILER="$CLANGXX" \
     -DCMAKE_C_COMPILER_TARGET="$TARGET" \
@@ -187,9 +193,10 @@ configure_engine() {
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTING=OFF \
     -DLLVM_ENABLE_PROJECTS=clang \
-    -DLLVM_EXTERNAL_PROJECTS="cmark;swift" \
+    -DLLVM_EXTERNAL_PROJECTS="cmark;swift;xtoolcompiler" \
     -DLLVM_EXTERNAL_CMARK_SOURCE_DIR="$SRC_ROOT/cmark" \
     -DLLVM_EXTERNAL_SWIFT_SOURCE_DIR="$SRC_ROOT/swift" \
+    -DLLVM_EXTERNAL_XTOOLCOMPILER_SOURCE_DIR="$REPO_ROOT/CompilerEngine" \
     -DLLVM_TARGETS_TO_BUILD=AArch64 \
     -DLLVM_HOST_TRIPLE="$TARGET" \
     -DLLVM_DEFAULT_TARGET_TRIPLE="$TARGET" \
@@ -199,6 +206,8 @@ configure_engine() {
     -DLLVM_BUILD_UTILS=OFF \
     -DLLVM_INCLUDE_TOOLS=ON \
     -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+    -DLLVM_BUILD_LLVM_DYLIB=OFF \
+    -DLLVM_LINK_LLVM_DYLIB=OFF \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DCLANG_INCLUDE_TESTS=OFF \
@@ -251,19 +260,17 @@ configure_engine() {
 
 build_engine() {
   [[ -f "$BUILD_ROOT/build.ninja" ]] || die "compiler engine is not configured; run configure first"
-  section "build swiftFrontendTool"
+  section "build XToolCompilerEngine dylib"
   echo "Using $JOBS parallel jobs to reduce memory pressure."
-  "$CMAKE" --build "$BUILD_ROOT" --target swiftFrontendTool -- --jobs="$JOBS"
-  section "built frontend archives"
-  find "$BUILD_ROOT" -type f \
-    \( -name 'libswiftFrontendTool.a' -o -name 'libswiftFrontend.a' -o -name 'libswiftIRGen.a' -o -name 'libswiftClangImporter.a' \) \
-    -print -exec file {} \; 2>/dev/null || true
-  section "result"
-  if find "$BUILD_ROOT" -type f -name 'libswiftFrontendTool.a' -print -quit | grep -q .; then
-    echo "SUCCESS: arm64 iOS Swift frontend dependency graph produced libswiftFrontendTool.a"
-  else
-    echo "PARTIAL: build completed but libswiftFrontendTool.a was not found at an expected path."
-  fi
+  echo "CMake will build only the dependency closure required by the final engine."
+  "$CMAKE" --build "$BUILD_ROOT" --target XToolCompilerEngine -- --jobs="$JOBS"
+
+  section "compiler engine result"
+  [[ -f "$ENGINE_DYLIB" ]] || die "build completed but compiler engine dylib was not produced: $ENGINE_DYLIB"
+  file "$ENGINE_DYLIB" || true
+  du -h "$ENGINE_DYLIB" | awk '{print "size: "$1}'
+  echo "SUCCESS: $ENGINE_DYLIB"
+  echo "The mobile IPA packager will bundle this file automatically."
 }
 
 show_status() {
@@ -272,7 +279,12 @@ show_status() {
   du -sh "$WORK_ROOT" 2>/dev/null || true
   df -h "$WORK_ROOT" 2>/dev/null || true
   [[ -f "$BUILD_ROOT/build.ninja" ]] && echo "configured: yes" || echo "configured: no"
-  find "$BUILD_ROOT" -type f -name 'libswiftFrontendTool.a' -print 2>/dev/null || true
+  if [[ -f "$ENGINE_DYLIB" ]]; then
+    echo "compiler engine: $ENGINE_DYLIB"
+    file "$ENGINE_DYLIB" 2>/dev/null || true
+  else
+    echo "compiler engine: not built"
+  fi
 }
 
 case "$MODE" in
