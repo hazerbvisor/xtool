@@ -12,8 +12,13 @@ public struct PreparedToolchain: Sendable, Hashable {
         self.root = root
     }
 
+    /// Supports selecting either the directory that contains `Developer` or
+    /// the `Developer` directory itself from the iOS Files picker.
     public var developerDirectory: URL {
-        root.appendingPathComponent("Developer", isDirectory: true)
+        if root.lastPathComponent == "Developer" {
+            return root
+        }
+        return root.appendingPathComponent("Developer", isDirectory: true)
     }
 
     public var toolchainDirectory: URL {
