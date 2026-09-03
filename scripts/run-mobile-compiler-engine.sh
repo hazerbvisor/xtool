@@ -5,9 +5,9 @@ MODE="${1:-configure}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_ROOT="${XTOOL_COMPILER_WORK:-$ROOT/.build/mobile-compiler-engine}"
 SHIM_DIR="$WORK_ROOT/native-tools/bin"
-PATCHED_DRIVER="$WORK_ROOT/build-mobile-compiler-engine.patched.sh"
+LOG_FILE="$WORK_ROOT/${MODE}.log"
 
-mkdir -p "$SHIM_DIR"
+mkdir -p "$SHIM_DIR" "$WORK_ROOT"
 
 find_tool() {
   local exact="$1"
@@ -68,29 +68,21 @@ for name in llvm-tblgen clang-tblgen llvm-ar llvm-ranlib llvm-config llvm-profda
   fi
 done
 
-# CMake 3.25's Swift try-compile inherits CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY.
-# Its sanity source contains top-level `print("CMake")`, which Swift correctly rejects
-# when CMake also passes -emit-library. We already proved this swiftc can target iOS
-# during the xtool bootstrap build, so mark the cross compiler as working and skip
-# that invalid sanity test. Keep the tracked build script clean by patching a temp copy.
-python3 - "$ROOT/scripts/build-mobile-compiler-engine.sh" "$PATCHED_DRIVER" <<'PY'
-from pathlib import Path
-import sys
-src = Path(sys.argv[1]).read_text()
-needle = '    -DCMAKE_Swift_COMPILER_TARGET="$TARGET" \\\n'
-replacement = needle + '    -DCMAKE_Swift_COMPILER_WORKS=TRUE \\\n    -DCMAKE_Swift_COMPILER_FORCED=TRUE \\\n'
-if needle not in src:
-    raise SystemExit('error: could not locate CMAKE_Swift_COMPILER_TARGET in build driver')
-Path(sys.argv[2]).write_text(src.replace(needle, replacement, 1))
-PY
-chmod +x "$PATCHED_DRIVER"
-
 printf 'Darwin cross-build shims:\n'
 printf '  libtool:           %s\n' "$LIBTOOL"
 printf '  install_name_tool: %s\n' "${INSTALL_NAME_TOOL:-not found (main script will validate)}"
 printf '  PATH prefix:       %s\n' "$SHIM_DIR"
-printf '  Swift check:       forced valid for cross-compile\n'
-printf '  mode:              %s\n\n' "$MODE"
+printf '  mode:              %s\n' "$MODE"
+printf '  full log:          %s\n\n' "$LOG_FILE"
 
 cd "$ROOT"
-exec env PATH="$SHIM_DIR:$PATH" bash "$PATCHED_DRIVER" "$MODE"
+set +e
+env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh "$MODE" 2>&1 | tee "$LOG_FILE"
+status=${PIPESTATUS[0]}
+set -e
+
+if [[ $status -ne 0 ]]; then
+  printf '\nCompiler-engine %s failed (exit %d). Full terminal output saved to:\n  %s\n' "$MODE" "$status" "$LOG_FILE" >&2
+fi
+
+exit "$status"
