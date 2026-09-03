@@ -21,6 +21,7 @@ private struct MobileHomeView: View {
     @State private var showingProjectImporter = false
     @State private var showingToolchainImporter = false
     @State private var logLines: [String] = ["xtool mobile ready"]
+    @State private var attemptedBundledRuntimeDiscovery = false
 
     var body: some View {
         NavigationStack {
@@ -37,19 +38,14 @@ private struct MobileHomeView: View {
                         LabeledContent("Package.swift", value: "Found")
                         LabeledContent("xtool.yml", value: project.hasXToolConfiguration ? "Found" : "Not present")
                     } else {
-                        Text("Select a SwiftPM project folder containing Package.swift.")
+                        Text("Project import is optional for the compiler probe. The first Hello.swift test will run from xtool's own sandbox.")
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section("Darwin SDK") {
-                    Button {
-                        showingToolchainImporter = true
-                    } label: {
-                        Label("Import Darwin SDK", systemImage: "shippingbox")
-                    }
-
                     if let toolchain {
+                        LabeledContent("Source", value: toolchainScopeURL == nil ? "Bundled in IPA" : "Files")
                         LabeledContent("Developer", value: toolchain.developerDirectory.lastPathComponent)
                         LabeledContent("iPhoneOS SDK", value: sdkDisplayName(toolchain))
                         LabeledContent(
@@ -57,7 +53,13 @@ private struct MobileHomeView: View {
                             value: toolchain.hasBundledSwiftFrontend ? "Present" : "Not required"
                         )
                     } else {
-                        Text("Select darwin.artifactbundle or its Developer folder. The Linux swift-frontend binary is not needed on iPad.")
+                        Button {
+                            showingToolchainImporter = true
+                        } label: {
+                            Label("Import External Darwin SDK", systemImage: "shippingbox")
+                        }
+
+                        Text("No bundled runtime was found. Repackage after running scripts/prepare-mobile-runtime.sh, or import an external Darwin SDK folder.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -95,6 +97,9 @@ private struct MobileHomeView: View {
             }
             .navigationTitle("xtool")
         }
+        .onAppear {
+            discoverBundledRuntimeIfNeeded()
+        }
         .fileImporter(
             isPresented: $showingProjectImporter,
             allowedContentTypes: [.folder],
@@ -108,6 +113,34 @@ private struct MobileHomeView: View {
             allowsMultipleSelection: false
         ) { result in
             importToolchain(result)
+        }
+    }
+
+    private func discoverBundledRuntimeIfNeeded() {
+        guard !attemptedBundledRuntimeDiscovery else { return }
+        attemptedBundledRuntimeDiscovery = true
+
+        guard let resourceURL = Bundle.main.resourceURL else {
+            appendLog("bundled runtime: app resource URL unavailable")
+            return
+        }
+
+        let root = resourceURL.appendingPathComponent("MobileRuntime", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            appendLog("bundled runtime: not present")
+            return
+        }
+
+        do {
+            let selected = PreparedToolchain(root: root)
+            try selected.validate()
+            let sdk = try selected.iPhoneOSSDK()
+            toolchain = selected
+            toolchainScopeURL = nil
+            appendLog("bundled Darwin runtime: valid")
+            appendLog("SDK: \(sdk.lastPathComponent)")
+        } catch {
+            appendLog("bundled runtime invalid: \(String(describing: error))")
         }
     }
 
@@ -139,13 +172,8 @@ private struct MobileHomeView: View {
             let sdk = try selected.iPhoneOSSDK()
             toolchain = selected
             toolchainScopeURL = url
-            appendLog("Darwin SDK tree: valid")
+            appendLog("external Darwin SDK tree: valid")
             appendLog("SDK: \(sdk.lastPathComponent)")
-            appendLog(
-                selected.hasBundledSwiftFrontend
-                    ? "standalone swift-frontend: present (not used by mobile backend)"
-                    : "standalone swift-frontend: absent as expected"
-            )
         } catch {
             appendLog("Darwin SDK import failed: \(String(describing: error))")
         }
