@@ -6,16 +6,20 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 BUNDLE_ID="${BUNDLE_ID:-sh.xtool.mobile}"
 DISPLAY_NAME="${DISPLAY_NAME:-xtool}"
 MIN_IOS="${MIN_IOS:-16.0}"
-# Keep the Darwin SDK/runtime outside the .app by default. iOS signing tools may
-# recursively inspect SDK dylibs as if they were app frameworks and fail while
-# signing. Set EMBED_RUNTIME=1 only for experiments with a signer that supports
-# opaque compiler/SDK data inside the bundle.
-EMBED_RUNTIME="${EMBED_RUNTIME:-0}"
+
+# Default mobile distribution mode: keep the Darwin SDK bundled in the IPA as
+# ONE opaque zip file. Signers therefore do not recursively inspect SDK dylibs,
+# while xtool can unpack the archive into Application Support on first launch.
+BUNDLE_RUNTIME_ARCHIVE="${BUNDLE_RUNTIME_ARCHIVE:-1}"
+# Expanded embedding is retained only as a debugging option because some iOS
+# signing tools try to sign every dylib they discover under the app bundle.
+EMBED_RUNTIME_EXPANDED="${EMBED_RUNTIME_EXPANDED:-0}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/$TRIPLE/$CONFIGURATION"
 EXECUTABLE="$BUILD_DIR/XToolMobileApp"
 RUNTIME="$ROOT/.build/XToolMobileRuntime"
+RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.zip"
 STAGE="$ROOT/.build/mobile-package"
 PAYLOAD="$STAGE/Payload"
 APP="$PAYLOAD/XToolMobileApp.app"
@@ -33,18 +37,22 @@ mkdir -p "$APP"
 cp "$EXECUTABLE" "$APP/XToolMobileApp"
 chmod 0755 "$APP/XToolMobileApp"
 
-if [[ "$EMBED_RUNTIME" == "1" ]]; then
-  if [[ -d "$RUNTIME/Developer/Platforms/iPhoneOS.platform" ]]; then
-    echo "Embedding prepared iPhoneOS runtime into app bundle (experimental)..."
-    cp -a "$RUNTIME" "$APP/MobileRuntime"
+if [[ "$BUNDLE_RUNTIME_ARCHIVE" == "1" ]]; then
+  if [[ -f "$RUNTIME_ARCHIVE" ]]; then
+    echo "Bundling Darwin runtime as signer-safe MobileRuntime.zip..."
+    cp "$RUNTIME_ARCHIVE" "$APP/MobileRuntime.zip"
   else
-    echo "warning: .build/XToolMobileRuntime is missing; packaging without bundled runtime" >&2
+    echo "warning: $RUNTIME_ARCHIVE is missing" >&2
     echo "Run: bash scripts/prepare-mobile-runtime.sh" >&2
   fi
-else
-  echo "Packaging signer-safe IPA without embedded Darwin runtime."
+fi
+
+if [[ "$EMBED_RUNTIME_EXPANDED" == "1" ]]; then
   if [[ -d "$RUNTIME/Developer/Platforms/iPhoneOS.platform" ]]; then
-    echo "Use .build/XToolMobileRuntime.zip as the external runtime on iPad."
+    echo "Embedding expanded Darwin runtime (experimental)..."
+    cp -a "$RUNTIME" "$APP/MobileRuntime"
+  else
+    echo "warning: expanded runtime folder is missing" >&2
   fi
 fi
 
@@ -68,9 +76,9 @@ cat > "$APP/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1</string>
+    <string>0.2</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>MinimumOSVersion</key>
@@ -102,6 +110,9 @@ EOF
 if command -v zip >/dev/null 2>&1; then
   (
     cd "$STAGE"
+    # The outer IPA zip may compress MobileRuntime.zip poorly because it is
+    # already compressed, but leaving it nested prevents signers from walking
+    # the SDK's dylib tree.
     zip -qry -y "$IPA" Payload
   )
 elif command -v python3 >/dev/null 2>&1; then
@@ -123,7 +134,7 @@ cat <<EOF
 Created unsigned IPA:
   $IPA
 
-This IPA is intentionally NOT signed and contains NO provisioning profile.
-Darwin SDK/runtime embedding: $EMBED_RUNTIME
-Sign it on your iPad, then import XToolMobileRuntime from Files when needed.
+Signing: intentionally unsigned; no provisioning profile included.
+Bundled runtime archive: $BUNDLE_RUNTIME_ARCHIVE
+Expanded runtime: $EMBED_RUNTIME_EXPANDED
 EOF
