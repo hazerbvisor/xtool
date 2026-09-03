@@ -6,7 +6,7 @@ DEVELOPER="$SOURCE_ROOT/Developer"
 TOOLCHAIN="$DEVELOPER/Toolchains/XcodeDefault.xctoolchain"
 OUT_ROOT="${1:-$PWD/.build/XToolMobileRuntime}"
 OUT_DEVELOPER="$OUT_ROOT/Developer"
-ARCHIVE="$OUT_ROOT.zip"
+ARCHIVE="$OUT_ROOT.tar"
 
 if [[ ! -d "$DEVELOPER/Platforms/iPhoneOS.platform" ]]; then
   echo "error: missing iPhoneOS.platform under $DEVELOPER" >&2
@@ -62,14 +62,16 @@ EOF
 echo "Prepared runtime tree:"
 du -sh "$OUT_ROOT"
 
-if command -v zip >/dev/null 2>&1; then
+if command -v tar >/dev/null 2>&1; then
   (
     cd "$(dirname "$OUT_ROOT")"
-    zip -qry -y "$ARCHIVE" "$(basename "$OUT_ROOT")"
+    # USTAR keeps the archive simple enough for the tiny in-app extractor while
+    # preserving directories and symlinks. No network/archive Swift package needed.
+    tar --format=ustar -cf "$ARCHIVE" "$(basename "$OUT_ROOT")"
   )
-  echo "Created archive:"
+  echo "Created runtime archive:"
   ls -lh "$ARCHIVE"
 else
-  echo "warning: zip not installed; leaving prepared folder unarchived"
-  echo "Install it with: apt-get install -y zip"
+  echo "error: tar is required to prepare the bundled runtime" >&2
+  exit 1
 fi
