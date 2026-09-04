@@ -29,6 +29,7 @@ private struct MobileHomeView: View {
     @State private var attemptedCompilerEngineDiscovery = false
     @State private var isPreparingBundledRuntime = false
     @State private var isCompilingHello = false
+    @State private var isRunningNativeProbe = false
 
     var body: some View {
         NavigationStack {
@@ -88,6 +89,14 @@ private struct MobileHomeView: View {
                     LabeledContent("Execution", value: MobileCompilerBridgeContract.executionModel)
                     LabeledContent("Backend", value: "FrontendTool")
                     LabeledContent("Engine", value: compilerEngineStatus)
+                    LabeledContent(
+                        "Clang frontend",
+                        value: compilerEngine?.supportsClangFrontend == true ? "Ready" : "Not bundled"
+                    )
+                    LabeledContent(
+                        "Mach-O LLD",
+                        value: compilerEngine?.supportsMachOLLD == true ? "Ready" : "Not bundled"
+                    )
                     LabeledContent("Architecture", value: capabilities.architecture)
                     LabeledContent("iOS family", value: capabilities.isRunningOnIOSFamily ? "Yes" : "No")
                     LabeledContent(
@@ -105,7 +114,7 @@ private struct MobileHomeView: View {
                     } label: {
                         Label("Prepare Hello.swift", systemImage: "hammer.circle")
                     }
-                    .disabled(toolchain == nil || isCompilingHello)
+                    .disabled(toolchain == nil || isCompilingHello || isRunningNativeProbe)
 
                     Button {
                         compileHello()
@@ -119,7 +128,7 @@ private struct MobileHomeView: View {
                             Label("Compile Hello.swift", systemImage: "play.circle.fill")
                         }
                     }
-                    .disabled(helloPlan == nil || compilerEngine == nil || isCompilingHello)
+                    .disabled(helloPlan == nil || compilerEngine == nil || isCompilingHello || isRunningNativeProbe)
 
                     if let helloPlan {
                         LabeledContent("Target", value: helloPlan.targetTriple)
@@ -133,6 +142,32 @@ private struct MobileHomeView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     }
+                }
+
+                Section("C + Mach-O Bootstrap") {
+                    Button {
+                        runClangLLDProbe()
+                    } label: {
+                        if isRunningNativeProbe {
+                            HStack {
+                                ProgressView()
+                                Text("Compiling + linking C probe…")
+                            }
+                        } else {
+                            Label("Run C + LLD Probe", systemImage: "link.circle.fill")
+                        }
+                    }
+                    .disabled(
+                        toolchain == nil ||
+                        compilerEngine?.supportsClangFrontend != true ||
+                        compilerEngine?.supportsMachOLLD != true ||
+                        isRunningNativeProbe ||
+                        isCompilingHello
+                    )
+
+                    Text("Compiles Hello.c to an arm64 iOS object with embedded Clang, then links it to a Mach-O executable with embedded LLD. No subprocesses are used.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Build Log") {
@@ -179,6 +214,8 @@ private struct MobileHomeView: View {
             appendLog("compiler engine: loaded")
             appendLog("compiler engine version: \(engine.version)")
             appendLog("compiler engine path: \(engine.location.path)")
+            appendLog("compiler engine clang: \(engine.supportsClangFrontend ? "ready" : "missing")")
+            appendLog("compiler engine lld-macho: \(engine.supportsMachOLLD ? "ready" : "missing")")
         } catch {
             compilerEngine = nil
             compilerEngineStatus = "Not bundled"
@@ -316,6 +353,8 @@ private struct MobileHomeView: View {
             appendLog("probe: 2 GiB VM reservation \(reserved ? "OK" : "FAILED")")
             if let compilerEngine {
                 appendLog("probe: compiler engine loaded: \(compilerEngine.version)")
+                appendLog("probe: Clang frontend \(compilerEngine.supportsClangFrontend ? "READY" : "missing")")
+                appendLog("probe: Mach-O LLD \(compilerEngine.supportsMachOLLD ? "READY" : "missing")")
             } else {
                 appendLog("probe: compiler engine not bundled")
             }
@@ -416,6 +455,117 @@ private struct MobileHomeView: View {
         }
     }
 
+    private func runClangLLDProbe() {
+        guard let toolchain else {
+            appendLog("native probe: no Darwin SDK selected")
+            return
+        }
+        guard let engine = compilerEngine else {
+            appendLog("native probe: compiler engine is not bundled")
+            return
+        }
+        guard engine.supportsClangFrontend else {
+            appendLog("native probe: embedded Clang frontend is missing")
+            return
+        }
+        guard engine.supportsMachOLLD else {
+            appendLog("native probe: embedded Mach-O LLD is missing")
+            return
+        }
+
+        do {
+            guard let applicationSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first else {
+                appendLog("native probe: Application Support unavailable")
+                return
+            }
+
+            let workspace = applicationSupport.appendingPathComponent(
+                "NativeCompilerProbe",
+                isDirectory: true
+            )
+            let plan = try MobileClangLLDProbePlan.helloC(
+                toolchain: toolchain,
+                workspace: workspace
+            )
+
+            isRunningNativeProbe = true
+            appendLog("native probe: source: \(plan.sourceURL.path)")
+            appendLog("native probe: target: \(plan.targetTriple)")
+            appendLog("native probe: entering in-process Clang frontend...")
+            appendLog("clang argv:")
+            for argument in plan.clangArguments {
+                appendLog("  \(argument)")
+            }
+
+            Task {
+                do {
+                    let clangResult = try await Task.detached(priority: .userInitiated) {
+                        try engine.runClangFrontend(arguments: plan.clangArguments)
+                    }.value
+
+                    appendNativeDiagnostics(label: "clang", data: clangResult.standardError)
+                    guard clangResult.succeeded else {
+                        appendLog("native probe: Clang exited with code \(clangResult.exitCode)")
+                        isRunningNativeProbe = false
+                        return
+                    }
+
+                    guard FileManager.default.fileExists(atPath: plan.objectURL.path) else {
+                        appendLog("native probe: Clang returned success but HelloC.o is missing")
+                        isRunningNativeProbe = false
+                        return
+                    }
+
+                    let objectAttributes = try FileManager.default.attributesOfItem(
+                        atPath: plan.objectURL.path
+                    )
+                    let objectBytes = (objectAttributes[.size] as? NSNumber)?.int64Value ?? 0
+                    appendLog("native probe: Clang SUCCESS — HelloC.o (\(objectBytes) bytes)")
+                    appendLog("native probe: entering in-process Mach-O LLD...")
+                    appendLog("lld argv:")
+                    for argument in plan.lldArguments {
+                        appendLog("  \(argument)")
+                    }
+
+                    let lldResult = try await Task.detached(priority: .userInitiated) {
+                        try engine.runMachOLLD(arguments: plan.lldArguments)
+                    }.value
+
+                    appendNativeDiagnostics(label: "lld", data: lldResult.standardError)
+                    guard lldResult.succeeded else {
+                        appendLog("native probe: LLD exited with code \(lldResult.exitCode)")
+                        isRunningNativeProbe = false
+                        return
+                    }
+
+                    guard FileManager.default.fileExists(atPath: plan.executableURL.path) else {
+                        appendLog("native probe: LLD returned success but Mach-O output is missing")
+                        isRunningNativeProbe = false
+                        return
+                    }
+
+                    let executableAttributes = try FileManager.default.attributesOfItem(
+                        atPath: plan.executableURL.path
+                    )
+                    let executableBytes = (executableAttributes[.size] as? NSNumber)?.int64Value ?? 0
+                    appendLog("native probe: LLD SUCCESS — arm64 iOS Mach-O (\(executableBytes) bytes)")
+                    appendLog("native probe: \(plan.executableURL.path)")
+                    appendLog("native probe: C + LLD IN-PROCESS BOOTSTRAP COMPLETE")
+                    isRunningNativeProbe = false
+                } catch {
+                    appendLog("native probe failed: \(String(describing: error))")
+                    isRunningNativeProbe = false
+                }
+            }
+        } catch {
+            appendLog("native probe preparation failed: \(String(describing: error))")
+            isRunningNativeProbe = false
+        }
+    }
+
     private func appendCompilerDiagnostics(_ data: Data) {
         guard !data.isEmpty else {
             appendLog("compile diagnostics: <none captured>")
@@ -423,6 +573,19 @@ private struct MobileHomeView: View {
         }
 
         appendLog("compile diagnostics:")
+        let text = String(decoding: data, as: UTF8.self)
+        for line in text.split(whereSeparator: \.isNewline) {
+            appendLog("  \(line)")
+        }
+    }
+
+    private func appendNativeDiagnostics(label: String, data: Data) {
+        guard !data.isEmpty else {
+            appendLog("\(label) diagnostics: <none captured>")
+            return
+        }
+
+        appendLog("\(label) diagnostics:")
         let text = String(decoding: data, as: UTF8.self)
         for line in text.split(whereSeparator: \.isNewline) {
             appendLog("  \(line)")
