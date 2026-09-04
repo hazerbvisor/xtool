@@ -30,11 +30,28 @@ new = '''  // XTool Mobile AOT compatibility: keep macro language features enabl
   // Intentionally keep the promoted macro declaration features enabled.
 #endif
 '''
+
+disable_markers = [
+    'disableFeature(Feature::Macros);',
+    'disableFeature(Feature::FreestandingExpressionMacros);',
+    'disableFeature(Feature::AttachedMacros);',
+    'disableFeature(Feature::ExtensionMacros);',
+]
+
 if new in s:
     print('XTool SDK macro-declaration compatibility patch: already applied')
+elif not any(marker in s for marker in disable_markers):
+    # Earlier XTool patch revisions used slightly different comments around the
+    # same semantic change. If all four disableFeature calls are already gone,
+    # the desired compiler state is present regardless of comment wording.
+    print('XTool SDK macro-declaration compatibility patch: already applied (semantic check)')
 elif old in s:
     p.write_text(s.replace(old, new, 1))
     print('XTool SDK macro-declaration compatibility patch: applied')
 else:
-    raise SystemExit('error: expected Swift macro-disable block not found')
+    present = [marker for marker in disable_markers if marker in s]
+    raise SystemExit(
+        'error: Swift macro-disable block is in an unexpected partial state: '
+        + ', '.join(present)
+    )
 PY
