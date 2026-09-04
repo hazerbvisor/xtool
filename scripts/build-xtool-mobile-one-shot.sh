@@ -13,7 +13,7 @@ IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
 COMPILER_CONFIG_REV="ios-rpath-clang-shared-off-v1"
 COMPILER_CONFIG_STAMP="$WORK_ROOT/.xtool-compiler-config-rev"
-COMPILER_ENGINE_REV="sdk-macro-import-v2"
+COMPILER_ENGINE_REV="sdk-macro-import-v3"
 COMPILER_ENGINE_STAMP="$WORK_ROOT/.xtool-compiler-engine-rev"
 
 mkdir -p "$ROOT/.build"
@@ -83,6 +83,10 @@ run_all() {
       bash scripts/run-mobile-compiler-engine.sh configure
       printf '%s\n' "$COMPILER_CONFIG_REV" > "$COMPILER_CONFIG_STAMP"
     fi
+
+    echo
+    echo '=== SDK opaque macro interface patch ==='
+    bash scripts/patch-mobile-compiler-sdk-macro-interface.sh
 
     echo '=== compiler build ==='
     bash scripts/run-mobile-compiler-engine.sh build
