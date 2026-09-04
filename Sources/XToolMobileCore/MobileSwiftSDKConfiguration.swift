@@ -35,6 +35,21 @@ public struct MobileSwiftSDKConfiguration: Sendable, Hashable {
     public var iPhoneOSSwiftResourceDirectory: URL {
         swiftResourceDirectory.appendingPathComponent("iphoneos", isDirectory: true)
     }
+
+    /// Version encoded by an SDK name such as iPhoneOS26.5.sdk.
+    public var targetSDKVersion: String? {
+        let stem = sdkURL.deletingPathExtension().lastPathComponent
+        let prefix = "iPhoneOS"
+        guard stem.hasPrefix(prefix) else { return nil }
+        let version = String(stem.dropFirst(prefix.count))
+        return version.isEmpty ? nil : version
+    }
+
+    /// Canonical SDK name normally synthesized by the Swift driver.
+    public var targetSDKName: String? {
+        guard let version = targetSDKVersion else { return nil }
+        return "iphoneos\(version)"
+    }
 }
 
 public extension PreparedToolchain {
@@ -211,9 +226,17 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
             "-enable-objc-interop",
             "-enable-cross-import-overlays",
             "-disable-modules-validate-system-headers",
+            "-Rmodule-loading",
             "-module-load-mode", "prefer-serialized",
             "-I", configuration.iPhoneOSSwiftResourceDirectory.path,
         ]
+
+        if let sdkVersion = configuration.targetSDKVersion {
+            arguments += ["-target-sdk-version", sdkVersion]
+        }
+        if let sdkName = configuration.targetSDKName {
+            arguments += ["-target-sdk-name", sdkName]
+        }
 
         for path in configuration.includeSearchPaths {
             arguments += ["-I", path.path]
