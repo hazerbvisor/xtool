@@ -7,38 +7,52 @@ import Glibc
 #endif
 
 /// Loads the optional compiler engine bundled inside XTool Mobile and invokes
-/// Swift's frontend through a small stable C ABI.
+/// Swift, Clang and Mach-O LLD through a small stable C ABI.
 ///
-/// Keeping the heavy Swift/LLVM implementation behind a dylib means the app,
-/// UI and build planner can be rebuilt independently from the compiler itself.
+/// Keeping the heavy compiler implementation behind a dylib means the app, UI
+/// and build planner can be rebuilt independently from the compiler itself.
 public final class MobileCompilerEngine: @unchecked Sendable {
     public static let dylibName = "libXToolCompilerEngine.dylib"
 
-    private typealias FrontendRun = @convention(c) (
+    private typealias NativeRun = @convention(c) (
         Int32,
         UnsafePointer<UnsafePointer<CChar>?>?
     ) -> Int32
     private typealias VersionRead = @convention(c) () -> UnsafePointer<CChar>?
 
     private let handle: UnsafeMutableRawPointer
-    private let runFrontendFunction: FrontendRun
+    private let runFrontendFunction: NativeRun
+    private let runClangFunction: NativeRun?
+    private let runLLDMachOFunction: NativeRun?
     public let location: URL
     public let version: String
 
     private init(
         handle: UnsafeMutableRawPointer,
-        runFrontendFunction: @escaping FrontendRun,
+        runFrontendFunction: @escaping NativeRun,
+        runClangFunction: NativeRun?,
+        runLLDMachOFunction: NativeRun?,
         location: URL,
         version: String
     ) {
         self.handle = handle
         self.runFrontendFunction = runFrontendFunction
+        self.runClangFunction = runClangFunction
+        self.runLLDMachOFunction = runLLDMachOFunction
         self.location = location
         self.version = version
     }
 
     deinit {
         dlclose(handle)
+    }
+
+    public var supportsClangFrontend: Bool {
+        runClangFunction != nil
+    }
+
+    public var supportsMachOLLD: Bool {
+        runLLDMachOFunction != nil
     }
 
     public static func loadFromApplicationBundle(
@@ -62,7 +76,14 @@ public final class MobileCompilerEngine: @unchecked Sendable {
             guard let runSymbol = dlsym(handle, "xtool_swift_frontend_run") else {
                 throw MobileCompilerEngineError.missingSymbol("xtool_swift_frontend_run")
             }
-            let runFrontend = unsafeBitCast(runSymbol, to: FrontendRun.self)
+            let runFrontend = unsafeBitCast(runSymbol, to: NativeRun.self)
+
+            let runClang: NativeRun? = dlsym(handle, "xtool_clang_frontend_run").map {
+                unsafeBitCast($0, to: NativeRun.self)
+            }
+            let runLLDMachO: NativeRun? = dlsym(handle, "xtool_lld_macho_run").map {
+                unsafeBitCast($0, to: NativeRun.self)
+            }
 
             var version = "unknown"
             if let versionSymbol = dlsym(handle, "xtool_compiler_engine_version") {
@@ -75,6 +96,8 @@ public final class MobileCompilerEngine: @unchecked Sendable {
             return MobileCompilerEngine(
                 handle: handle,
                 runFrontendFunction: runFrontend,
+                runClangFunction: runClang,
+                runLLDMachOFunction: runLLDMachO,
                 location: location,
                 version: version
             )
@@ -90,26 +113,50 @@ public final class MobileCompilerEngine: @unchecked Sendable {
     /// desktop driver's `-frontend` dispatch marker. Strip that marker here as
     /// a defensive compatibility measure so older cached plans cannot feed a
     /// driver-only option to the embedded frontend.
-    ///
-    /// The embedded frontend writes diagnostics to the process stderr file
-    /// descriptor. Capture that descriptor around the call so compiler errors
-    /// can be surfaced in XTool Mobile's build log instead of disappearing into
-    /// the application process console.
     public func run(_ plan: MobileCompilerPlan) throws -> MobileBuildResult {
         var frontendArguments = plan.arguments
         if frontendArguments.first == "-frontend" {
             frontendArguments.removeFirst()
         }
 
-        let capture = try captureStandardError {
-            try withCStringArray(frontendArguments) { argc, argv in
-                runFrontendFunction(argc, argv)
-            }
+        return try runNative(
+            arguments: frontendArguments,
+            function: runFrontendFunction
+        )
+    }
+
+    /// Executes Clang's cc1 frontend in-process.
+    ///
+    /// Arguments are frontend/cc1 arguments and must not contain an executable
+    /// argv[0] entry or the desktop driver's `-cc1` dispatch marker.
+    public func runClangFrontend(arguments: [String]) throws -> MobileBuildResult {
+        guard let runClangFunction else {
+            throw MobileCompilerEngineError.missingSymbol("xtool_clang_frontend_run")
         }
 
-        return MobileBuildResult(
-            standardError: capture.standardError,
-            exitCode: capture.value
+        var frontendArguments = arguments
+        if frontendArguments.first == "-cc1" {
+            frontendArguments.removeFirst()
+        }
+
+        return try runNative(
+            arguments: frontendArguments,
+            function: runClangFunction
+        )
+    }
+
+    /// Executes LLD's Darwin/Mach-O driver in-process.
+    ///
+    /// Pass ordinary ld64-style arguments. The native bridge supplies the
+    /// synthetic argv[0] entry required by `lldMain`.
+    public func runMachOLLD(arguments: [String]) throws -> MobileBuildResult {
+        guard let runLLDMachOFunction else {
+            throw MobileCompilerEngineError.missingSymbol("xtool_lld_macho_run")
+        }
+
+        return try runNative(
+            arguments: arguments,
+            function: runLLDMachOFunction
         )
     }
 
@@ -129,12 +176,36 @@ public final class MobileCompilerEngine: @unchecked Sendable {
         return result.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 
+    private func runNative(
+        arguments: [String],
+        function: NativeRun
+    ) throws -> MobileBuildResult {
+        let capture = try captureStandardError {
+            try withCStringArray(arguments) { argc, argv in
+                function(argc, argv)
+            }
+        }
+
+        return MobileBuildResult(
+            standardError: capture.standardError,
+            exitCode: capture.value
+        )
+    }
+
+    /// The embedded compiler stack writes diagnostics to the process stderr file
+    /// descriptor. Capture that descriptor around a single frontend/linker call
+    /// so errors can be surfaced inside XTool Mobile instead of disappearing into
+    /// the application process console.
+    ///
+    /// This is intentionally serialized by the current bootstrap UI (one native
+    /// job at a time). A future concurrent build scheduler should replace the
+    /// process-global descriptor capture with per-engine diagnostic callbacks.
     private func captureStandardError<R>(
         _ body: () throws -> R
     ) throws -> (value: R, standardError: Data) {
         let fileManager = FileManager.default
         let captureURL = fileManager.temporaryDirectory
-            .appendingPathComponent("xtool-swift-frontend-\(UUID().uuidString).stderr")
+            .appendingPathComponent("xtool-native-engine-\(UUID().uuidString).stderr")
 
         let captureFD = captureURL.path.withCString {
             open($0, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR)
