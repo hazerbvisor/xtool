@@ -39,19 +39,26 @@ run_bootstrap() {
   echo
 
   echo '=== source compatibility patches ==='
-  # The all-in-one iOS source patcher already includes the macro language and
-  # MacroDefinition fallback changes. Do not run the older declaration patch a
-  # second time here; doing so is redundant and made older patch revisions
-  # sensitive to harmless comment differences in LangOptions.cpp.
   bash scripts/patch-mobile-compiler-ios-sources.sh
+  # The all-in-one iOS patcher above already handles the macro language gate.
+  # Keep only the distinct SDK-interface diagnostic patch here so the same
+  # LangOptions.cpp transformation is not applied twice with different text.
   bash scripts/patch-mobile-compiler-sdk-macro-interface.sh
 
   echo
-  echo '=== enable LLD in existing CMake graph ==='
+  echo '=== enable LLD libraries in existing CMake graph ==='
+  # XTool embeds lldMachO as a library and never launches the lld command-line
+  # executable. On an iOS CMake target, executables are modeled as bundles;
+  # upstream LLD's tool install rule has no BUNDLE DESTINATION and therefore
+  # fails configuration. Disable the unnecessary LLD tools while keeping all
+  # LLD libraries/targets available to XToolCompilerEngine.
   "$CMAKE" \
     -S "$LLVM_SOURCE" \
     -B "$BUILD_ROOT" \
-    -DLLVM_ENABLE_PROJECTS="clang;lld"
+    -DLLVM_ENABLE_PROJECTS="clang;lld" \
+    -DLLD_BUILD_TOOLS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_INCLUDE_EXAMPLES=OFF
 
   if ! grep -q 'lldMachO' "$BUILD_ROOT/build.ninja"; then
     echo "error: CMake regeneration completed but lldMachO is missing from build.ninja" >&2
@@ -63,7 +70,7 @@ run_bootstrap() {
   fi
 
   printf '%s\n' "$CONFIG_REV" > "$CONFIG_STAMP"
-  echo "CMake graph: Clang frontend + Mach-O LLD enabled"
+  echo "CMake graph: Clang frontend + Mach-O LLD libraries enabled"
 
   echo
   echo '=== incremental engine build ==='
