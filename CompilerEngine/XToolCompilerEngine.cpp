@@ -46,9 +46,18 @@ extern "C" int32_t xtool_swift_frontend_run(
     }
 
     llvm::ArrayRef<const char *> arguments(argv, static_cast<size_t>(argc));
-    return static_cast<int32_t>(
+    const int32_t result = static_cast<int32_t>(
         swift::performFrontend(arguments, "xtool-mobile", nullptr, nullptr)
     );
+
+    // FrontendTool normally exits the process after special-mode queries such
+    // as -print-target-info, so LLVM's buffered raw streams are flushed by
+    // process teardown. XTool keeps the compiler image alive in-process; flush
+    // explicitly while stdout/stderr are still redirected by the Swift bridge.
+    llvm::outs().flush();
+    llvm::errs().flush();
+
+    return result;
 }
 
 extern "C" int32_t xtool_clang_frontend_run(
