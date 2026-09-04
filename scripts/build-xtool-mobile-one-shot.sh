@@ -15,7 +15,7 @@ IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
 COMPILER_CONFIG_REV="ios-clang-lld-v1"
 COMPILER_CONFIG_STAMP="$WORK_ROOT/.xtool-compiler-config-rev"
-COMPILER_ENGINE_REV="clang-lld-swiftmodules-v3"
+COMPILER_ENGINE_REV="clang-lld-swiftmodules-v4"
 COMPILER_ENGINE_STAMP="$WORK_ROOT/.xtool-compiler-engine-rev"
 
 mkdir -p "$ROOT/.build"
