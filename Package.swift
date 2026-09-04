@@ -64,6 +64,17 @@ let package = Package(
 
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-subprocess", .upToNextMinor(from: "0.5.0")),
+        // Pin the driver to the exact Swift 6.3.2 release used by the embedded
+        // compiler engine. XTool Mobile uses the library only for planning; the
+        // resulting frontend jobs are still executed through our in-process ABI.
+        .package(
+            url: "https://github.com/swiftlang/swift-driver.git",
+            revision: "7d6b844f0c2497a997770a11536598b187066be9"
+        ),
+        .package(
+            url: "https://github.com/swiftlang/swift-tools-support-core.git",
+            branch: "release/6.3"
+        ),
 
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.23.0"),
         .package(url: "https://github.com/swift-server/swift-openapi-async-http-client", from: "1.0.0"),
@@ -114,7 +125,10 @@ let package = Package(
         ),
         .target(
             name: "XToolMobileCore",
-            dependencies: []
+            dependencies: [
+                .product(name: "SwiftDriver", package: "swift-driver"),
+                .product(name: "TSCBasic", package: "swift-tools-support-core"),
+            ]
         ),
         .executableTarget(
             name: "XToolMobileApp",
