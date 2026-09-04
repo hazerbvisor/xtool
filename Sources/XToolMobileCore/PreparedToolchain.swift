@@ -8,6 +8,12 @@ import Foundation
 /// provide the Apple platform SDK and target runtime files. The compiler bridge
 /// will be embedded into xtool and invoked in-process.
 public struct PreparedToolchain: Sendable, Hashable {
+    /// Keep this in sync with scripts/prepare-mobile-runtime.sh and the one-shot
+    /// runtime cache stamp. Bundled-runtime discovery uses it to avoid silently
+    /// reusing an older extracted SDK/runtime after an app update.
+    public static let expectedBundledRuntimeRevision =
+        "swift-sdk-v6-validated-prebuilt-stdlib"
+
     public let root: URL
 
     public init(root: URL) {
@@ -43,6 +49,19 @@ public struct PreparedToolchain: Sendable, Hashable {
         developerDirectory.appendingPathComponent("Platforms/iPhoneOS.platform", isDirectory: true)
     }
 
+    public var runtimeRevisionURL: URL {
+        root.appendingPathComponent("XToolRuntimeRevision.txt")
+    }
+
+    public func runtimeRevision(fileManager: FileManager = .default) -> String? {
+        guard fileManager.fileExists(atPath: runtimeRevisionURL.path),
+              let text = try? String(contentsOf: runtimeRevisionURL, encoding: .utf8) else {
+            return nil
+        }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
     /// Validate the imported Darwin target SDK/runtime tree.
     ///
     /// This deliberately does NOT require `swift-frontend`. The Android xtool
@@ -61,6 +80,54 @@ public struct PreparedToolchain: Sendable, Hashable {
         }
 
         _ = try iPhoneOSSDK(fileManager: fileManager)
+    }
+
+    /// Stronger validation used only for XTool's own bundled archive. External
+    /// imported SDK trees intentionally remain accepted by `validate()` even if
+    /// they do not carry XTool's revision stamp.
+    public func validateBundledRuntime(fileManager: FileManager = .default) throws {
+        try validate(fileManager: fileManager)
+
+        guard runtimeRevision(fileManager: fileManager)
+                == Self.expectedBundledRuntimeRevision else {
+            throw MobileBuildBackendError.toolchainInvalid(
+                "Bundled runtime revision is stale or missing"
+            )
+        }
+
+        let sdk = try iPhoneOSSDK(fileManager: fileManager)
+        let sdkStem = sdk.deletingPathExtension().lastPathComponent
+        let sdkPrefix = "iPhoneOS"
+        var sdkVersion = sdkStem.hasPrefix(sdkPrefix)
+            ? String(sdkStem.dropFirst(sdkPrefix.count))
+            : ""
+
+        if sdkVersion.isEmpty,
+           let data = try? Data(contentsOf: sdk.appendingPathComponent("SDKSettings.json")),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let value = object["Version"] as? String {
+            sdkVersion = value
+        }
+
+        guard !sdkVersion.isEmpty else {
+            throw MobileBuildBackendError.toolchainInvalid(
+                "Bundled runtime SDK version could not be determined"
+            )
+        }
+
+        let prebuiltSwift = toolchainDirectory
+            .appendingPathComponent("usr/lib/swift/iphoneos/xtool-prebuilt-modules", isDirectory: true)
+            .appendingPathComponent(sdkVersion, isDirectory: true)
+            .appendingPathComponent("Swift.swiftmodule", isDirectory: true)
+        let candidates = [
+            prebuiltSwift.appendingPathComponent("arm64e-apple-ios.swiftmodule"),
+            prebuiltSwift.appendingPathComponent("arm64-apple-ios.swiftmodule"),
+        ]
+        guard candidates.contains(where: { fileManager.fileExists(atPath: $0.path) }) else {
+            throw MobileBuildBackendError.toolchainInvalid(
+                "Bundled upstream Swift stdlib module is missing"
+            )
+        }
     }
 
     /// Finds the newest installed iPhoneOS SDK in the prepared Darwin tree.
