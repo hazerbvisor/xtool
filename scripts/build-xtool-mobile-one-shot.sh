@@ -11,9 +11,9 @@ TRIPLE="${TRIPLE:-arm64-apple-ios}"
 RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
 IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
-COMPILER_CONFIG_REV="ios-rpath-clang-shared-off-v1"
+COMPILER_CONFIG_REV="ios-clang-lld-v1"
 COMPILER_CONFIG_STAMP="$WORK_ROOT/.xtool-compiler-config-rev"
-COMPILER_ENGINE_REV="sdk-macro-import-v3"
+COMPILER_ENGINE_REV="clang-lld-bootstrap-v1"
 COMPILER_ENGINE_STAMP="$WORK_ROOT/.xtool-compiler-engine-rev"
 
 mkdir -p "$ROOT/.build"
@@ -38,8 +38,14 @@ compiler_graph_is_usable() {
   grep -q 'XToolCompilerEngine' "$BUILD_ROOT/build.ninja"
 }
 
-compiler_config_is_current() {
+compiler_graph_has_clang_lld() {
   compiler_graph_is_usable || return 1
+  grep -q 'clangFrontendTool' "$BUILD_ROOT/build.ninja" || return 1
+  grep -q 'lldMachO' "$BUILD_ROOT/build.ninja"
+}
+
+compiler_config_is_current() {
+  compiler_graph_has_clang_lld || return 1
   [[ -f "$COMPILER_CONFIG_STAMP" ]] || return 1
   [[ "$(cat "$COMPILER_CONFIG_STAMP" 2>/dev/null || true)" == "$COMPILER_CONFIG_REV" ]]
 }
@@ -60,7 +66,14 @@ run_all() {
   echo "app triple:    $TRIPLE"
   echo
 
-  if compiler_engine_is_current && compiler_graph_is_usable; then
+  if compiler_graph_is_usable && ! compiler_graph_has_clang_lld; then
+    echo 'error: the preserved compiler graph predates the Clang + LLD bootstrap.' >&2
+    echo 'Run this cache-preserving upgrade once:' >&2
+    echo '  XTOOL_COMPILER_JOBS=3 bash scripts/bootstrap-mobile-clang-lld.sh' >&2
+    return 2
+  fi
+
+  if compiler_engine_is_current && compiler_graph_has_clang_lld; then
     echo '=== compiler engine ==='
     echo "cache hit: compiler engine revision $COMPILER_ENGINE_REV"
     file "$ENGINE" 2>/dev/null || true
@@ -69,7 +82,7 @@ run_all() {
     if compiler_graph_is_usable; then
       echo '=== compiler configure ==='
       if compiler_config_is_current; then
-        echo 'cache hit: current CMake graph already contains XToolCompilerEngine'
+        echo 'cache hit: current CMake graph contains Swift + Clang + LLD engine targets'
       else
         echo 'existing working CMake graph found; preserving compiled object cache'
         echo 'backfilling config revision stamp without reconfiguring'
