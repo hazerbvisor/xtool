@@ -6,6 +6,10 @@ if(NOT TARGET swiftFrontendTool)
   message(FATAL_ERROR "XToolCompilerEngine requires the Swift swiftFrontendTool target")
 endif()
 
+if(NOT TARGET swiftCompilerModules)
+  message(FATAL_ERROR "XToolCompilerEngine requires Swift compiler modules so initializeSwiftModules() matches the real swift-frontend executable")
+endif()
+
 if(NOT TARGET clangFrontendTool)
   message(FATAL_ERROR "XToolCompilerEngine requires the Clang clangFrontendTool target")
 endif()
@@ -63,7 +67,7 @@ target_compile_features(XToolCompilerEngine PRIVATE cxx_std_17)
 # preserved LLVM/Clang/LLD object graph without hardcoding a misleading version
 # into the dylib. Existing 6.3.2 builds keep their current value by default.
 set(XTOOL_COMPILER_ENGINE_VERSION
-  "swift-6.3.2-RELEASE+clang+lld"
+  "swift-6.3.2-RELEASE+clang+lld+swiftmodules"
   CACHE STRING
   "Version string reported by the embedded XTool compiler engine"
 )
@@ -73,6 +77,7 @@ target_compile_definitions(XToolCompilerEngine PRIVATE
 
 target_link_libraries(XToolCompilerEngine PRIVATE
   swiftFrontendTool
+  swiftCompilerModules
   clangFrontendTool
   lldMachO
   lldCommon
