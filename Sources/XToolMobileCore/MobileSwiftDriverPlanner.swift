@@ -16,7 +16,8 @@ enum MobileSwiftDriverPlanner {
         swiftResourceDirectory: URL,
         targetTriple: String,
         includeSearchPaths: [URL],
-        clangBuiltinHeaders: URL?
+        clangBuiltinHeaders: URL?,
+        moduleLoadMode: String = "only-serialized"
     ) throws -> [String] {
         let runner = try EmbeddedSwiftFrontendRunner.loadFromApplicationBundle()
         let executor = try InProcessPlanningExecutor(runner: runner)
@@ -51,13 +52,20 @@ enum MobileSwiftDriverPlanner {
             )
         }
 
-        // Never let Swift/Clang fall back to ~/.cache on iOS. That location is
-        // outside the app's writable sandbox and causes SwiftShims PCM creation
-        // to fail with EPERM. Keep both Swift and Clang module caches next to
-        // the probe output, which is already inside Application Support.
+        // Never let Swift/Clang fall back to ~/.cache on iOS. Namespace the
+        // writable caches by SDK + bundled-runtime revision so a newly prepared
+        // SDK cannot accidentally reuse PCM/module artifacts from an older app
+        // installation or runtime layout.
         let cacheRoot = objectURL.deletingLastPathComponent()
-        let moduleCache = cacheRoot.appendingPathComponent("ModuleCache-SwiftDriver", isDirectory: true)
-        let sdkModuleCache = cacheRoot.appendingPathComponent("SDKModuleCache-SwiftDriver", isDirectory: true)
+        let cacheNamespace = "\(sdkVersion)-\(PreparedToolchain.expectedBundledRuntimeRevision)"
+        let moduleCache = cacheRoot.appendingPathComponent(
+            "ModuleCache-SwiftDriver-\(cacheNamespace)",
+            isDirectory: true
+        )
+        let sdkModuleCache = cacheRoot.appendingPathComponent(
+            "SDKModuleCache-SwiftDriver-\(cacheNamespace)",
+            isDirectory: true
+        )
         try FileManager.default.createDirectory(
             at: moduleCache,
             withIntermediateDirectories: true
@@ -99,12 +107,14 @@ enum MobileSwiftDriverPlanner {
         // These are frontend-only options, so send them through -Xfrontend
         // instead of relying on process environment inherited by SwiftDriver.
         // The in-process frontend is not a child process and therefore does not
-        // automatically receive Driver.env.
+        // automatically receive Driver.env. The bootstrap defaults to
+        // only-serialized so it can never hide an invalid custom Swift module by
+        // rebuilding Apple's textual stdlib interface again.
         driverArguments += [
             "-Xfrontend", "-prebuilt-module-cache-path",
             "-Xfrontend", prebuiltModuleCache.path,
             "-Xfrontend", "-module-load-mode",
-            "-Xfrontend", "prefer-serialized",
+            "-Xfrontend", moduleLoadMode,
             "-Xfrontend", "-disable-modules-validate-system-headers",
             "-Xfrontend", "-Rmodule-loading",
             "-o", objectURL.path,
@@ -115,7 +125,7 @@ enum MobileSwiftDriverPlanner {
         let syntheticFrontend = compilerBin.appendingPathComponent("swift-frontend")
         let environment = [
             "SWIFT_DRIVER_SWIFT_FRONTEND_EXEC": syntheticFrontend.path,
-            "SWIFT_FORCE_MODULE_LOADING": "prefer-serialized",
+            "SWIFT_FORCE_MODULE_LOADING": moduleLoadMode,
         ]
 
         var driver = try Driver(
