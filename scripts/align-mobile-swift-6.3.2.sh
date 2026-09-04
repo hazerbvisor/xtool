@@ -19,10 +19,15 @@ LOG="$WORK_ROOT/align-swift-6.3.2.log"
 
 CMAKE="$(command -v cmake 2>/dev/null || true)"
 HOST_SWIFTC="${XTOOL_HOST_SWIFTC:-$(command -v swiftc 2>/dev/null || true)}"
+HOST_SWIFT_BIN="$(dirname "$HOST_SWIFTC")"
 
 [[ -n "$CMAKE" ]] || { echo "error: cmake not found" >&2; exit 1; }
 [[ -n "$HOST_SWIFTC" && -x "$HOST_SWIFTC" ]] || {
   echo "error: host swiftc not found" >&2
+  exit 1
+}
+[[ -x "$HOST_SWIFT_BIN/swift" ]] || {
+  echo "error: sibling swift driver not found next to $HOST_SWIFTC" >&2
   exit 1
 }
 [[ -f "$BUILD_ROOT/build.ninja" ]] || {
@@ -169,7 +174,9 @@ run_alignment() {
 
   echo
   echo '=== package aligned IPA + refresh bound runtime ==='
-  XTOOL_HOST_SWIFTC="$HOST_SWIFTC" bash scripts/build-xtool-mobile-one-shot.sh
+  PATH="$HOST_SWIFT_BIN:$PATH" \
+  XTOOL_HOST_SWIFTC="$HOST_SWIFTC" \
+    bash scripts/build-xtool-mobile-one-shot.sh
 
   echo
   echo '=== SUCCESS ==='
