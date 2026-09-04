@@ -74,10 +74,9 @@ public struct PreparedToolchain: Sendable, Hashable {
     ///
     /// External SDK folders remain revision-agnostic. XTool's own extracted
     /// Application Support runtime always uses the fixed `XToolMobileRuntime`
-    /// directory name, so require the current revision *even when an older
-    /// runtime predates the revision-stamp file entirely*. This makes the app's
-    /// existing `validate()`-based discovery automatically discard/re-extract
-    /// stale bundled runtimes after an IPA update.
+    /// directory name, so require both the current revision and the generated
+    /// upstream Swift stdlib module. This makes discovery reject an old,
+    /// truncated, or partially extracted runtime before SwiftDriver planning.
     public func validate(fileManager: FileManager = .default) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: developerDirectory.path, isDirectory: &isDirectory),
@@ -107,13 +106,19 @@ public struct PreparedToolchain: Sendable, Hashable {
             )
         }
 
-        _ = try iPhoneOSSDK(fileManager: fileManager)
+        let sdk = try iPhoneOSSDK(fileManager: fileManager)
+        if isXToolBundledRuntimeRoot {
+            try validateBundledSwiftModule(
+                sdk: sdk,
+                fileManager: fileManager
+            )
+        }
     }
 
     /// Stronger validation for callers that explicitly know they are handling
-    /// XTool's bundled archive. `validate()` already enforces the revision for
-    /// the canonical XToolMobileRuntime directory; this additionally verifies
-    /// the distribution-matched Swift stdlib module is present.
+    /// XTool's bundled archive. The canonical Application Support runtime is
+    /// already fully checked by `validate()`; this method also works for a
+    /// bundled runtime staged under a different directory name.
     public func validateBundledRuntime(fileManager: FileManager = .default) throws {
         try validate(fileManager: fileManager)
 
@@ -125,6 +130,16 @@ public struct PreparedToolchain: Sendable, Hashable {
         }
 
         let sdk = try iPhoneOSSDK(fileManager: fileManager)
+        try validateBundledSwiftModule(
+            sdk: sdk,
+            fileManager: fileManager
+        )
+    }
+
+    private func validateBundledSwiftModule(
+        sdk: URL,
+        fileManager: FileManager
+    ) throws {
         let sdkStem = sdk.deletingPathExtension().lastPathComponent
         let sdkPrefix = "iPhoneOS"
         var sdkVersion = sdkStem.hasPrefix(sdkPrefix)
