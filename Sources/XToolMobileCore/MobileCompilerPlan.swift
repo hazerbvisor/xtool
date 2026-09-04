@@ -56,11 +56,11 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         // Keep module caches inside the writable app container. A failed textual
         // interface rebuild from an older probe must not poison this run.
         let moduleCache = workspace.appendingPathComponent(
-            "ModuleCache-Prebuilt",
+            "ModuleCache-UpstreamPrebuilt",
             isDirectory: true
         )
         let sdkModuleCache = workspace.appendingPathComponent(
-            "SDKModuleCache-Prebuilt",
+            "SDKModuleCache-UpstreamPrebuilt",
             isDirectory: true
         )
         try fileManager.createDirectory(
@@ -113,19 +113,20 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-sdk-module-cache-path", sdkModuleCache.path,
             "-no-auto-bridging-header-chaining",
             "-module-name", "main",
-            // Keep module-loading diagnostics enabled so the app log proves
-            // whether Swift came from the prebuilt cache or a textual interface.
+            // Make module selection visible in the app log and require a usable
+            // serialized module before considering a textual interface fallback.
             "-Rmodule-loading",
+            "-module-load-mode", "prefer-serialized",
         ]
 
-        // Swift's resource tree contains Apple-provided serialized modules at:
-        //   iphoneos/prebuilt-modules/<sdk-version>/Swift.swiftmodule/...
-        // Point performFrontend there explicitly. The normal driver can derive
-        // this path, but our in-process bridge has no real swift-frontend argv[0]
-        // and should not depend on executable-path inference.
+        // The Apple-provided prebuilt module is serialized by Apple's Swift
+        // distribution. XTool's embedded compiler is upstream swift.org 6.3.2,
+        // so the runtime-preparation step now builds a matching Swift.swiftmodule
+        // from the SDK's textual interface on Linux and stores it here instead:
+        //   iphoneos/xtool-prebuilt-modules/<sdk-version>/Swift.swiftmodule/...
         if let sdkVersion = configuration.targetSDKVersion {
             let prebuiltModules = platformSwiftResources
-                .appendingPathComponent("prebuilt-modules", isDirectory: true)
+                .appendingPathComponent("xtool-prebuilt-modules", isDirectory: true)
                 .appendingPathComponent(sdkVersion, isDirectory: true)
             arguments += [
                 "-prebuilt-module-cache-path", prebuiltModules.path,
