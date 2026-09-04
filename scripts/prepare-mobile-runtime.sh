@@ -111,19 +111,49 @@ fi
 # frontend currently fails. Build a distribution-matched serialized stdlib once
 # on the Linux host (where the same SDK/interface already compiles successfully)
 # and bundle it for the in-process frontend to consume directly.
-IOS_SDK="$(find "$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/SDKs" \
-  -maxdepth 1 -type d -name 'iPhoneOS*.sdk' | sort -V | tail -1 || true)"
+SDK_DIR="$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/SDKs"
+
+# Xcode SDK layouts commonly contain a real iPhoneOS.sdk directory plus a
+# versioned symlink such as iPhoneOS26.5.sdk -> iPhoneOS.sdk. Do not filter with
+# `-type d` here: that drops the versioned symlink and leaves us with a basename
+# that contains no version. Prefer an explicitly versioned entry when present.
+IOS_SDK="$(find "$SDK_DIR" -maxdepth 1 -name 'iPhoneOS[0-9]*.sdk' -print 2>/dev/null | sort -V | tail -1 || true)"
 if [[ -z "$IOS_SDK" ]]; then
-  echo "error: copied iPhoneOS SDK not found in prepared runtime" >&2
+  IOS_SDK="$SDK_DIR/iPhoneOS.sdk"
+fi
+if [[ ! -d "$IOS_SDK" ]]; then
+  echo "error: copied iPhoneOS SDK not found in prepared runtime: $IOS_SDK" >&2
   exit 1
 fi
 
 SDK_STEM="$(basename "$IOS_SDK" .sdk)"
 SDK_VERSION="${SDK_STEM#iPhoneOS}"
+
+# Fallback for SDKs that expose only the unversioned iPhoneOS.sdk directory.
+# SDKSettings.json is authoritative for the SDK version and avoids depending on
+# a particular symlink naming convention.
 if [[ -z "$SDK_VERSION" || "$SDK_VERSION" == "$SDK_STEM" ]]; then
+  SDK_SETTINGS="$IOS_SDK/SDKSettings.json"
+  if [[ -f "$SDK_SETTINGS" ]]; then
+    SDK_VERSION="$(python3 - "$SDK_SETTINGS" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as f:
+        value = json.load(f).get('Version', '')
+    print(value or '')
+except Exception:
+    print('')
+PY
+)"
+  fi
+fi
+if [[ -z "$SDK_VERSION" ]]; then
   echo "error: unable to derive iPhoneOS SDK version from $IOS_SDK" >&2
   exit 1
 fi
+
+echo "Selected iPhoneOS SDK: $IOS_SDK"
+echo "Detected SDK version:  $SDK_VERSION"
 
 BOUND_SWIFT_RESOURCES="$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift"
 BOUND_IPHONEOS_SWIFT="$BOUND_SWIFT_RESOURCES/iphoneos"
