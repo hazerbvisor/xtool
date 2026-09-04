@@ -81,6 +81,7 @@ run_engine() {
     echo '=== prepare + iOS compatibility patches ==='
     env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh prepare
     bash scripts/patch-mobile-compiler-ios-sources.sh
+    bash scripts/patch-mobile-compiler-sdk-macro-declarations.sh
     echo
   fi
 
