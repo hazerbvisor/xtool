@@ -254,7 +254,7 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         delegate: JobExecutionDelegate,
         numParallelJobs: Int,
         forceResponseFiles: Bool,
-        recordedInputModificationDates: [TypedVirtualPath: FileMetadata]
+        recordedInputModificationDates: [TypedVirtualPath: TimePoint]
     ) throws {
         fatalError("Unsupported legacy SwiftDriver executor entry point")
     }
