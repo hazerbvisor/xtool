@@ -63,13 +63,13 @@ target_include_directories(XToolCompilerEngine PRIVATE
 
 target_compile_features(XToolCompilerEngine PRIVATE cxx_std_17)
 
-# Keep this overrideable so patch-release frontend experiments can reuse the
-# preserved LLVM/Clang/LLD object graph without hardcoding a misleading version
-# into the dylib. Existing 6.3.2 builds keep their current value by default.
+# Force this marker so an existing preserved CMake cache cannot keep reporting
+# the older C++-only engine identity after the swiftCompilerModules relink.
 set(XTOOL_COMPILER_ENGINE_VERSION
   "swift-6.3.2-RELEASE+clang+lld+swiftmodules"
   CACHE STRING
   "Version string reported by the embedded XTool compiler engine"
+  FORCE
 )
 target_compile_definitions(XToolCompilerEngine PRIVATE
   XTOOL_COMPILER_ENGINE_VERSION="${XTOOL_COMPILER_ENGINE_VERSION}"
