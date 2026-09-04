@@ -7,7 +7,7 @@ TOOLCHAIN="$DEVELOPER/Toolchains/XcodeDefault.xctoolchain"
 OUT_ROOT="${1:-$PWD/.build/XToolMobileRuntime}"
 OUT_DEVELOPER="$OUT_ROOT/Developer"
 ARCHIVE="$OUT_ROOT.tar"
-RUNTIME_REV="swift-sdk-v5-upstream-prebuilt-stdlib"
+RUNTIME_REV="swift-sdk-v6-validated-prebuilt-stdlib"
 REQUIRED_HOST_SWIFT="6.3.2"
 
 if [[ ! -d "$DEVELOPER/Platforms/iPhoneOS.platform" ]]; then
@@ -109,8 +109,7 @@ fi
 # it can reject Apple's binary module and fall back to rebuilding the SDK's
 # textual Swift.swiftinterface. That textual rebuild is exactly where the iPad
 # frontend currently fails. Build a distribution-matched serialized stdlib once
-# on the Linux host (where the same SDK/interface already compiles successfully)
-# and bundle it for the in-process frontend to consume directly.
+# on the Linux host and bundle it for the in-process frontend to consume.
 SDK_DIR="$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/SDKs"
 
 # Xcode SDK layouts commonly contain a real iPhoneOS.sdk directory plus a
@@ -170,10 +169,12 @@ fi
 
 mkdir -p "$XTOOL_SWIFT_MODULE_DIR" "$HOST_MODULE_CACHE"
 
+# Match Swift's own utils/swift_build_sdk_interfaces.py behavior. Hash-based
+# dependencies survive copying/tarring/extracting the runtime on iPad; mtime
+# dependencies can make a perfectly valid prebuilt module look stale after the
+# app unpacks it and force an unwanted textual-interface rebuild.
 echo "Building upstream Swift $REQUIRED_HOST_SWIFT stdlib module for iPhoneOS $SDK_VERSION ..."
-# Invoke through the `swiftc` entrypoint rather than its resolved `swift-driver`
-# target. Swift's integrated driver dispatch uses argv[0] to determine its mode;
-# executing the resolved binary directly produces "invalid driver name: swift-driver".
+SWIFT_FORCE_MODULE_LOADING=prefer-serialized \
 "$HOST_SWIFTC" -frontend \
   -build-module-from-parseable-interface \
   -sdk "$IOS_SDK" \
@@ -182,6 +183,7 @@ echo "Building upstream Swift $REQUIRED_HOST_SWIFT stdlib module for iPhoneOS $S
   -I "$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/usr/lib" \
   -module-cache-path "$HOST_MODULE_CACHE" \
   -prebuilt-module-cache-path "$XTOOL_PREBUILT_ROOT" \
+  -serialize-parseable-module-interface-dependency-hashes \
   -parse-stdlib \
   -diagnostic-style llvm \
   -disable-modules-validate-system-headers \
@@ -199,8 +201,63 @@ if [[ ! -s "$XTOOL_SWIFT_MODULE" ]]; then
   exit 1
 fi
 
+# Swift's official prebuilt-cache generator stores the originating SDK build
+# version beside the modules. Keep the same shape so ModuleInterfaceLoader can
+# compare/diagnose SDK cache provenance correctly.
+SYSTEM_VERSION_PLIST="$IOS_SDK/System/Library/CoreServices/SystemVersion.plist"
+if [[ -f "$SYSTEM_VERSION_PLIST" ]]; then
+  cp -f "$SYSTEM_VERSION_PLIST" "$XTOOL_PREBUILT_ROOT/SystemVersion.plist"
+fi
+
 echo "Upstream Swift stdlib module:"
 ls -lh "$XTOOL_SWIFT_MODULE"
+
+# Validate the exact custom prebuilt cache before packaging it. This uses the
+# same upstream frontend and forces serialized-only Swift module loading, so a
+# bad filename, stale dependency record, or unreadable serialized module fails
+# on the build host rather than after another IPA install on the iPad.
+VALIDATION_ROOT="$OUT_ROOT/.host-swift-validation"
+VALIDATION_CACHE="$VALIDATION_ROOT/ModuleCache"
+VALIDATION_SOURCE="$VALIDATION_ROOT/Hello.swift"
+VALIDATION_OBJECT="$VALIDATION_ROOT/Hello.o"
+rm -rf "$VALIDATION_ROOT"
+mkdir -p "$VALIDATION_CACHE"
+cat > "$VALIDATION_SOURCE" <<'EOF'
+public func xtoolPrebuiltValidation() -> Int {
+  return 42
+}
+EOF
+
+echo "Validating XTool prebuilt Swift stdlib cache ..."
+SWIFT_FORCE_MODULE_LOADING=only-serialized \
+"$HOST_SWIFTC" -frontend \
+  -c -primary-file "$VALIDATION_SOURCE" \
+  -target arm64-apple-ios16.0 \
+  -Xllvm -aarch64-use-tbi \
+  -enable-objc-interop \
+  -sdk "$IOS_SDK" \
+  -resource-dir "$BOUND_SWIFT_RESOURCES" \
+  -I "$BOUND_IPHONEOS_SWIFT" \
+  -I "$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/usr/lib" \
+  -module-cache-path "$VALIDATION_CACHE" \
+  -prebuilt-module-cache-path "$XTOOL_PREBUILT_ROOT" \
+  -module-load-mode only-serialized \
+  -disable-modules-validate-system-headers \
+  -target-sdk-version "$SDK_VERSION" \
+  -target-sdk-name "iphoneos$SDK_VERSION" \
+  -Xcc -isysroot \
+  -Xcc "$IOS_SDK" \
+  -Xcc -isystem \
+  -Xcc "$BOUND_CLANG_INCLUDE" \
+  -module-name XToolPrebuiltValidation \
+  -o "$VALIDATION_OBJECT"
+
+if [[ ! -s "$VALIDATION_OBJECT" ]]; then
+  echo "error: XTool prebuilt Swift stdlib validation did not produce an object" >&2
+  exit 1
+fi
+rm -rf "$VALIDATION_ROOT"
+echo "Prebuilt Swift stdlib validation: PASS"
 
 # SwiftPM's successful Linux -> iOS build is driven by these files. Keep them
 # in the mobile runtime so the in-process frontend can resolve the same SDK,
@@ -236,7 +293,8 @@ The bundled Swift Clang builtin headers are rebound to the host Swift 6.3.2
 compiler toolchain, matching the Xcode 26.5 cross-SDK preparation used by xcross.
 A Swift.swiftmodule compiled from the Apple textual SDK interface by upstream
 Swift 6.3.2 is bundled under iphoneos/xtool-prebuilt-modules so the iPad frontend
-does not need to rebuild Apple's standard-library interface at runtime.
+does not need to rebuild Apple's standard-library interface at runtime. The
+module uses hash-based dependency records and is validated before packaging.
 EOF
 
 echo "Prepared runtime tree:"
