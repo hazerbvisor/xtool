@@ -28,6 +28,22 @@ enum MobileSwiftDriverPlanner {
             .deletingLastPathComponent()
         let compilerBin = toolchainUSR.appendingPathComponent("bin", isDirectory: true)
 
+        // Never let Swift/Clang fall back to ~/.cache on iOS. That location is
+        // outside the app's writable sandbox and causes SwiftShims PCM creation
+        // to fail with EPERM. Keep both Swift and Clang module caches next to
+        // the probe output, which is already inside Application Support.
+        let cacheRoot = objectURL.deletingLastPathComponent()
+        let moduleCache = cacheRoot.appendingPathComponent("ModuleCache-SwiftDriver", isDirectory: true)
+        let sdkModuleCache = cacheRoot.appendingPathComponent("SDKModuleCache-SwiftDriver", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: moduleCache,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: sdkModuleCache,
+            withIntermediateDirectories: true
+        )
+
         // Driver-level invocation matching the already-successful Linux swiftc probe.
         var driverArguments = [
             "swiftc",
@@ -35,6 +51,8 @@ enum MobileSwiftDriverPlanner {
             "-target", targetTriple,
             "-sdk", sdkURL.path,
             "-resource-dir", swiftResourceDirectory.path,
+            "-module-cache-path", moduleCache.path,
+            "-sdk-module-cache-path", sdkModuleCache.path,
             "-I", platformResources.path,
         ]
         for path in includeSearchPaths {
@@ -43,6 +61,10 @@ enum MobileSwiftDriverPlanner {
         driverArguments += [
             "-Xcc", "-isysroot",
             "-Xcc", sdkURL.path,
+            // Belt-and-suspenders: ClangImporter ultimately owns the PCM cache.
+            // Force its cache to the same writable directory even if frontend
+            // defaults or environment variables change in a future toolchain.
+            "-Xcc", "-fmodules-cache-path=\(moduleCache.path)",
         ]
         if let clangBuiltinHeaders {
             driverArguments += [
