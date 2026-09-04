@@ -88,6 +88,16 @@ runtime_is_current() {
   [[ "$(cat "$RUNTIME_REV_STAMP" 2>/dev/null || true)" == "$RUNTIME_REV" ]]
 }
 
+ensure_swiftdriver_resolved() {
+  if [[ -f "$ROOT/Package.resolved" ]] && grep -q '"swift-driver"' "$ROOT/Package.resolved"; then
+    echo 'cache hit: SwiftDriver dependency already resolved'
+    return 0
+  fi
+
+  echo 'resolving SwiftDriver dependencies (one-time package step)'
+  swift package resolve
+}
+
 run_all() {
   cd "$ROOT"
 
@@ -142,6 +152,10 @@ run_all() {
     echo "error: compiler build phase ended without final engine: $ENGINE" >&2
     return 1
   }
+
+  echo
+  echo '=== SwiftDriver package ==='
+  ensure_swiftdriver_resolved
 
   echo
   echo '=== XTool Mobile app build ==='
