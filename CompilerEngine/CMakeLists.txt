@@ -83,24 +83,17 @@ target_link_libraries(XToolCompilerEngine PRIVATE
   lldCommon
 )
 
-# `swiftCompilerModules` contains Swift object code. Swift's own host-tool and
-# host-library CMake helpers apply these runtime search/link flags whenever a
-# shared library has HAS_SWIFT_MODULES. XTool is an external-project target, so
-# mirror that step explicitly instead of relying on Mach-O autolink directives
-# to find libswiftCore and compatibility libraries by accident.
-if(COMMAND _add_swift_runtime_link_flags)
-  _add_swift_runtime_link_flags(XToolCompilerEngine "." "")
-else()
-  message(FATAL_ERROR "Swift runtime link helper is unavailable for XToolCompilerEngine")
-endif()
-
-# HOSTTOOLS normally derives its Swift runtime/compatibility search directory
-# from SWIFT_EXEC_FOR_SWIFT_MODULES. In this port that executable is the Linux
-# host Swift compiler (/opt/swift), so its derived `iphoneos` directory may not
-# exist. The actual iPhoneOS compatibility archives live in the extracted
-# Darwin/Xcode toolchain beside the SDK. Derive that Developer root from the SDK
-# path and add the real target runtime directory explicitly.
+# `swiftCompilerModules` contains Swift object code. Swift's normal host-tool
+# helper adds target Swift runtime/compatibility search paths and libobjc for
+# Darwin tools. XToolCompilerEngine is a sibling LLVM external project, so do
+# not depend on Swift's directory-scoped internal CMake helper being visible
+# here. Reproduce the small Darwin-specific part explicitly.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # CMAKE_OSX_SYSROOT is:
+  #   <bundle>/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS*.sdk
+  # Walk back to the artifact bundle's Developer directory, then use the actual
+  # Xcode target Swift runtime rather than a nonexistent /opt/swift/.../iphoneos
+  # directory derived from the Linux host compiler.
   get_filename_component(
     _xtool_darwin_developer
     "${CMAKE_OSX_SYSROOT}/../../../../.."
@@ -116,10 +109,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
       "${CMAKE_OSX_SYSROOT}/usr/lib/swift"
     )
   else()
-    message(WARNING
+    message(FATAL_ERROR
       "XToolCompilerEngine could not find Darwin Swift runtime directory: ${_xtool_darwin_swift_runtime}"
     )
   endif()
+
+  # Swift's Darwin host-tool helper links Objective-C runtime support when Swift
+  # compiler modules are present. Keep the same requirement explicit here.
+  target_link_libraries(XToolCompilerEngine PRIVATE objc)
 endif()
 
 # The Linux Swift/Clang driver otherwise falls back to the host ELF linker. A
@@ -154,9 +151,7 @@ endif()
 # CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG. Asking CMake itself for an @rpath install
 # name therefore fails during generation. Build the dylib without CMake-managed
 # runtime paths and let the bootstrap script set the final Mach-O install name
-# with llvm-install-name-tool after linking. Runtime search directories added
-# by Swift's helper above are only needed at link time for the ABI-stable iOS
-# Swift runtime, so keep CMake from synthesizing extra bundle-local rpaths.
+# with llvm-install-name-tool after linking.
 set_target_properties(XToolCompilerEngine PROPERTIES
   OUTPUT_NAME "XToolCompilerEngine"
   PREFIX "lib"
