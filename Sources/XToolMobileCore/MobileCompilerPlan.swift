@@ -54,15 +54,15 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             withIntermediateDirectories: true
         )
 
-        // Swift and Clang normally fall back to ~/.cache for implicit module
-        // artifacts. That path is outside XTool Mobile's writable iOS sandbox.
-        // Keep every compiler cache under the per-project workspace instead.
+        // Use a new cache namespace for the serialized-module path. The prior
+        // SDK-import probe may have cached a failed attempt to rebuild Apple's
+        // textual Swift.swiftinterface; never let that poison this strategy.
         let moduleCache = workspace.appendingPathComponent(
-            "ModuleCache",
+            "ModuleCache-Serialized",
             isDirectory: true
         )
         let sdkModuleCache = workspace.appendingPathComponent(
-            "SDKModuleCache",
+            "SDKModuleCache-Serialized",
             isDirectory: true
         )
         try fileManager.createDirectory(
@@ -77,6 +77,8 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         let source = workspace.appendingPathComponent("Hello.swift")
         let object = workspace.appendingPathComponent("Hello.o")
         let target = "arm64-apple-ios\(deploymentTarget)"
+        let platformSwiftResources = configuration.swiftResourceDirectory
+            .appendingPathComponent("iphoneos", isDirectory: true)
 
         // Referencing one type from each module makes this a real Apple SDK
         // compatibility test rather than an import that can be optimized away.
@@ -103,10 +105,18 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-module-cache-path", moduleCache.path,
             "-sdk-module-cache-path", sdkModuleCache.path,
             "-module-name", "XToolCompilerProbe",
-            "-swift-version", "6",
             "-enable-objc-interop",
             "-enable-cross-import-overlays",
             "-disable-modules-validate-system-headers",
+            // Apple SDKs carry both serialized modules and textual interfaces.
+            // Our embedded frontend is built from the same OSS Swift release as
+            // the phone toolchain but not Apple's swiftlang build, so prefer a
+            // compatible serialized module and avoid rebuilding Swift.swiftinterface.
+            "-module-load-mode", "prefer-serialized",
+            // Put the toolchain's platform Swift resources before the SDK's
+            // usr/lib/swift interfaces. This mirrors normal Swift resource lookup
+            // and prevents the raw Apple SDK copy from winning module discovery.
+            "-I", platformSwiftResources.path,
         ]
 
         // These are the include paths encoded in xtool's swift-sdk.json and
