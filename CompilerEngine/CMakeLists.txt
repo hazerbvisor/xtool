@@ -63,8 +63,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     if(NOT EXISTS "${XTOOL_MACHO_LINKER}")
       message(FATAL_ERROR "XTOOL_MACHO_LINKER does not exist: ${XTOOL_MACHO_LINKER}")
     endif()
-    target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=${XTOOL_MACHO_LINKER}")
+
+    # Linux Clang does not reliably translate Darwin driver options when it is
+    # cross-linking to iOS. Point it at the patched Mach-O linker explicitly and
+    # forward the required target metadata ourselves so ld64.lld never has to
+    # guess the Apple platform, architecture, or SDK root.
+    target_link_options(XToolCompilerEngine PRIVATE
+      "--ld-path=${XTOOL_MACHO_LINKER}"
+      "-Wl,-arch,arm64"
+      "-Wl,-platform_version,ios,${CMAKE_OSX_DEPLOYMENT_TARGET},${CMAKE_OSX_DEPLOYMENT_TARGET}"
+      "-Wl,-syslibroot,${CMAKE_OSX_SYSROOT}"
+    )
   else()
+    # Kept only for the initial configure pass. repair-mobile-compiler-linker.sh
+    # sets XTOOL_MACHO_LINKER before the final engine link is attempted.
     target_link_options(XToolCompilerEngine PRIVATE "-fuse-ld=lld")
   endif()
 endif()
