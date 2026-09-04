@@ -85,6 +85,16 @@ run_engine() {
     echo
   fi
 
+  # SwiftCompilerSources is built by a custom Swift command that does not
+  # inherit CMAKE_Swift_FLAGS. Apply this on both fresh configuration and
+  # incremental build retries so the Linux-hosted swiftc always sees the
+  # extracted Darwin Swift resources/SwiftShims while targeting iPhoneOS.
+  if [[ "$MODE" == "configure" || "$MODE" == "build" ]]; then
+    echo '=== SwiftCompilerSources Darwin SDK patch ==='
+    bash scripts/patch-mobile-swift-compiler-sources-sdk.sh
+    echo
+  fi
+
   env PATH="$SHIM_DIR:$PATH" bash scripts/build-mobile-compiler-engine.sh "$MODE"
 }
 
