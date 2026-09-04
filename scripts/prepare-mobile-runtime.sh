@@ -171,7 +171,10 @@ fi
 mkdir -p "$XTOOL_SWIFT_MODULE_DIR" "$HOST_MODULE_CACHE"
 
 echo "Building upstream Swift $REQUIRED_HOST_SWIFT stdlib module for iPhoneOS $SDK_VERSION ..."
-"$HOST_SWIFTC_REAL" -frontend \
+# Invoke through the `swiftc` entrypoint rather than its resolved `swift-driver`
+# target. Swift's integrated driver dispatch uses argv[0] to determine its mode;
+# executing the resolved binary directly produces "invalid driver name: swift-driver".
+"$HOST_SWIFTC" -frontend \
   -build-module-from-parseable-interface \
   -sdk "$IOS_SDK" \
   -resource-dir "$BOUND_SWIFT_RESOURCES" \
@@ -210,7 +213,8 @@ done
 
 printf '%s\n' "$RUNTIME_REV" > "$OUT_ROOT/XToolRuntimeRevision.txt"
 {
-  echo "swiftc: $HOST_SWIFTC_REAL"
+  echo "swiftc: $HOST_SWIFTC"
+  echo "swiftc resolved: $HOST_SWIFTC_REAL"
   echo "$HOST_SWIFT_VERSION"
   echo
   echo "clang: $HOST_CLANG"
@@ -238,7 +242,8 @@ EOF
 echo "Prepared runtime tree:"
 du -sh "$OUT_ROOT"
 echo "Runtime revision: $RUNTIME_REV"
-echo "Bound swiftc: $HOST_SWIFTC_REAL"
+echo "Bound swiftc: $HOST_SWIFTC"
+echo "Bound swiftc resolved: $HOST_SWIFTC_REAL"
 echo "Bound version: $HOST_SWIFT_VERSION"
 echo "Bound clang:  $HOST_CLANG"
 echo "Bound headers: $HOST_CLANG_INCLUDE"
