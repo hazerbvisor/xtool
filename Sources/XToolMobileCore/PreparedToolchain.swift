@@ -53,6 +53,10 @@ public struct PreparedToolchain: Sendable, Hashable {
         root.appendingPathComponent("XToolRuntimeRevision.txt")
     }
 
+    private var isXToolBundledRuntimeRoot: Bool {
+        root.lastPathComponent == "XToolMobileRuntime"
+    }
+
     public func runtimeRevision(fileManager: FileManager = .default) -> String? {
         guard fileManager.fileExists(atPath: runtimeRevisionURL.path),
               let text = try? String(contentsOf: runtimeRevisionURL, encoding: .utf8) else {
@@ -68,10 +72,12 @@ public struct PreparedToolchain: Sendable, Hashable {
     /// Darwin SDK keeps the Linux host compiler under /opt/swift while the
     /// artifact bundle provides the iPhoneOS target SDK/runtime data.
     ///
-    /// External SDK folders usually have no XToolRuntimeRevision.txt and remain
-    /// valid. If a revision stamp *is* present, however, this is one of XTool's
-    /// extracted bundled runtimes and stale revisions must be rejected so the
-    /// app re-extracts the newly bundled archive after an update.
+    /// External SDK folders remain revision-agnostic. XTool's own extracted
+    /// Application Support runtime always uses the fixed `XToolMobileRuntime`
+    /// directory name, so require the current revision *even when an older
+    /// runtime predates the revision-stamp file entirely*. This makes the app's
+    /// existing `validate()`-based discovery automatically discard/re-extract
+    /// stale bundled runtimes after an IPA update.
     public func validate(fileManager: FileManager = .default) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: developerDirectory.path, isDirectory: &isDirectory),
@@ -84,20 +90,30 @@ public struct PreparedToolchain: Sendable, Hashable {
             throw MobileBuildBackendError.toolchainInvalid("iPhoneOS.platform is missing")
         }
 
-        if fileManager.fileExists(atPath: runtimeRevisionURL.path),
-           runtimeRevision(fileManager: fileManager)
-                != Self.expectedBundledRuntimeRevision {
+        if isXToolBundledRuntimeRoot {
+            guard runtimeRevision(fileManager: fileManager)
+                    == Self.expectedBundledRuntimeRevision else {
+                throw MobileBuildBackendError.toolchainInvalid(
+                    "Bundled runtime revision is stale or missing"
+                )
+            }
+        } else if fileManager.fileExists(atPath: runtimeRevisionURL.path),
+                  runtimeRevision(fileManager: fileManager)
+                    != Self.expectedBundledRuntimeRevision {
+            // A manually imported tree that explicitly carries an XTool stamp
+            // should not silently masquerade as a compatible current runtime.
             throw MobileBuildBackendError.toolchainInvalid(
-                "Bundled runtime revision is stale"
+                "XTool runtime revision is stale"
             )
         }
 
         _ = try iPhoneOSSDK(fileManager: fileManager)
     }
 
-    /// Stronger validation used only for XTool's own bundled archive. External
-    /// imported SDK trees intentionally remain accepted by `validate()` even if
-    /// they do not carry XTool's revision stamp.
+    /// Stronger validation for callers that explicitly know they are handling
+    /// XTool's bundled archive. `validate()` already enforces the revision for
+    /// the canonical XToolMobileRuntime directory; this additionally verifies
+    /// the distribution-matched Swift stdlib module is present.
     public func validateBundledRuntime(fileManager: FileManager = .default) throws {
         try validate(fileManager: fileManager)
 
