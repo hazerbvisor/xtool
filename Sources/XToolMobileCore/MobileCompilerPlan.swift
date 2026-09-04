@@ -31,6 +31,12 @@ public struct MobileCompilerPlan: Sendable, Hashable {
     /// Writes a tiny Swift source file and prepares the exact argument list
     /// consumed by `swift::performFrontend` to emit an arm64 iOS object file.
     ///
+    /// This first bootstrap probe deliberately uses `-parse-stdlib` and a source
+    /// file that does not reference Swift standard-library types. That isolates the
+    /// in-process frontend/IRGen path from Xcode SDK textual-module compatibility:
+    /// if this emits Hello.o, XTool has proven native AOT compilation on iPadOS.
+    /// Normal SDK-backed Swift compilation remains a separate compatibility step.
+    ///
     /// Important: `-frontend` is a Swift driver dispatch flag, not a frontend
     /// argument. The desktop driver strips it before calling `performFrontend`,
     /// so the in-process mobile bridge must not include it here.
@@ -74,9 +80,11 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             .appendingPathComponent("usr/lib/swift", isDirectory: true)
         let target = "arm64-apple-ios\(deploymentTarget)"
 
+        // Keep the bootstrap source independent of the implicit Swift module.
+        // `()` is a builtin tuple type, so this can reach IRGen without importing
+        // Apple SDK Swift.swiftinterface files produced by a different swiftlang build.
         let sourceText = """
-        public func xtoolCompilerProbe() -> Int {
-            42
+        public func xtoolCompilerProbe() {
         }
         """
         try Data(sourceText.utf8).write(to: source, options: .atomic)
@@ -84,6 +92,7 @@ public struct MobileCompilerPlan: Sendable, Hashable {
 
         let arguments = [
             "-c",
+            "-parse-stdlib",
             "-primary-file", source.path,
             "-target", target,
             "-sdk", sdk.path,
