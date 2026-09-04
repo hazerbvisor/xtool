@@ -83,6 +83,17 @@ target_link_libraries(XToolCompilerEngine PRIVATE
   lldCommon
 )
 
+# `swiftCompilerModules` contains Swift object code. Swift's own host-tool and
+# host-library CMake helpers apply these runtime search/link flags whenever a
+# shared library has HAS_SWIFT_MODULES. XTool is an external-project target, so
+# mirror that step explicitly instead of relying on Mach-O autolink directives
+# to find libswiftCore and compatibility libraries by accident.
+if(COMMAND _add_swift_runtime_link_flags)
+  _add_swift_runtime_link_flags(XToolCompilerEngine "." "")
+else()
+  message(FATAL_ERROR "Swift runtime link helper is unavailable for XToolCompilerEngine")
+endif()
+
 # The Linux Swift/Clang driver otherwise falls back to the host ELF linker. A
 # stock Swift Linux ld64.lld is also intentionally blocked from iOS linking by
 # a downstream Swift LLVM patch, so the repair script can provide a source-
@@ -115,7 +126,9 @@ endif()
 # CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG. Asking CMake itself for an @rpath install
 # name therefore fails during generation. Build the dylib without CMake-managed
 # runtime paths and let the bootstrap script set the final Mach-O install name
-# with llvm-install-name-tool after linking.
+# with llvm-install-name-tool after linking. Runtime search directories added
+# by Swift's helper above are only needed at link time for the ABI-stable iOS
+# Swift runtime, so keep CMake from synthesizing extra bundle-local rpaths.
 set_target_properties(XToolCompilerEngine PROPERTIES
   OUTPUT_NAME "XToolCompilerEngine"
   PREFIX "lib"
