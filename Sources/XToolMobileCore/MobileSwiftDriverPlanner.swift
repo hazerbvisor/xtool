@@ -8,10 +8,6 @@ import Darwin
 import Glibc
 #endif
 
-/// Uses the real Swift 6.3.2 driver to create the frontend invocation that XTool
-/// executes in-process. This removes the hand-maintained frontend argument list:
-/// SwiftDriver is now responsible for SDK/resource-dir defaults, target features,
-/// prebuilt module selection and future compiler-driver behavior.
 enum MobileSwiftDriverPlanner {
     static func frontendArguments(
         sourceURL: URL,
@@ -28,12 +24,11 @@ enum MobileSwiftDriverPlanner {
         let platformResources = swiftResourceDirectory
             .appendingPathComponent("iphoneos", isDirectory: true)
         let toolchainUSR = swiftResourceDirectory
-            .deletingLastPathComponent() // lib
-            .deletingLastPathComponent() // usr
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let compilerBin = toolchainUSR.appendingPathComponent("bin", isDirectory: true)
 
-        // These are driver-level arguments, deliberately matching the host
-        // `swiftc` probe that already succeeds against this Darwin SDK.
+        // Driver-level invocation matching the already-successful Linux swiftc probe.
         var driverArguments = [
             "swiftc",
             "-c", sourceURL.path,
@@ -57,22 +52,20 @@ enum MobileSwiftDriverPlanner {
         }
         driverArguments += ["-o", objectURL.path]
 
-        // Tool lookup normally expects runnable sibling executables. On iOS the
-        // frontend is a dylib entry point instead, so give SwiftDriver a stable
-        // synthetic path and let the executor intercept every frontend launch.
+        // SwiftDriver only needs a path identity. The executor below intercepts
+        // the launch and enters xtool_swift_frontend_run in-process.
         let syntheticFrontend = compilerBin.appendingPathComponent("swift-frontend")
         let environment = [
             "SWIFT_DRIVER_SWIFT_FRONTEND_EXEC": syntheticFrontend.path,
             "SWIFT_FORCE_MODULE_LOADING": "prefer-serialized",
         ]
 
-        let compilerExecutableDir = try AbsolutePath(validating: compilerBin.path)
         var driver = try Driver(
             args: driverArguments,
             env: environment,
             executor: executor,
             integratedDriver: true,
-            compilerExecutableDir: compilerExecutableDir
+            compilerExecutableDir: try AbsolutePath(validating: compilerBin.path)
         )
 
         let jobs = try driver.planBuild()
@@ -80,7 +73,7 @@ enum MobileSwiftDriverPlanner {
             throw MobileSwiftDriverPlannerError.noCompileJob
         }
 
-        var resolved = try executor.resolver.resolveArgumentList(
+        var resolved: [String] = try executor.resolver.resolveArgumentList(
             for: compileJob,
             useResponseFiles: .disabled
         )
@@ -88,9 +81,7 @@ enum MobileSwiftDriverPlanner {
             throw MobileSwiftDriverPlannerError.emptyCommandLine
         }
 
-        // ArgsResolver includes argv[0]. `xtool_swift_frontend_run` consumes the
-        // arguments after the executable and after SwiftDriver's dispatch marker.
-        resolved.removeFirst()
+        resolved.removeFirst() // argv[0]
         if resolved.first == "-frontend" {
             resolved.removeFirst()
         }
@@ -104,7 +95,6 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
     case missingFrontendSymbol
     case noCompileJob
     case emptyCommandLine
-    case unsupportedPlanningWorkload
     case unsupportedTool(String)
     case frontendFailed(Int32, String)
     case streamCaptureFailed(Int32)
@@ -112,7 +102,7 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .compilerEngineNotBundled(let urls):
-            return "SwiftDriver planner could not find the compiler engine: \(urls.map(\.path).joined(separator: ", "))"
+            return "SwiftDriver planner could not find compiler engine: \(urls.map(\.path).joined(separator: ", "))"
         case .compilerEngineLoadFailed(let url, let message):
             return "SwiftDriver planner could not load \(url.path): \(message)"
         case .missingFrontendSymbol:
@@ -120,11 +110,9 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
         case .noCompileJob:
             return "SwiftDriver did not produce a compile job"
         case .emptyCommandLine:
-            return "SwiftDriver produced an empty frontend command line"
-        case .unsupportedPlanningWorkload:
-            return "SwiftDriver requested an unsupported incremental planning workload"
+            return "SwiftDriver produced an empty command line"
         case .unsupportedTool(let tool):
-            return "SwiftDriver planning tried to execute unsupported tool: \(tool)"
+            return "SwiftDriver planning requested unsupported tool: \(tool)"
         case .frontendFailed(let code, let diagnostics):
             return "Swift frontend planning query failed with exit \(code): \(diagnostics)"
         case .streamCaptureFailed(let value):
@@ -133,9 +121,8 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
     }
 }
 
-/// DriverExecutor used only during planning. SwiftDriver asks the frontend for
-/// target information and supported features; those queries are executed through
-/// the same embedded frontend as the eventual compile, never as child processes.
+/// Equivalent to SwiftDriver's SimpleExecutor, except every frontend query is
+/// routed into the compiler dylib instead of creating a child process.
 private final class InProcessPlanningExecutor: DriverExecutor {
     let resolver: ArgsResolver
     private let runner: EmbeddedSwiftFrontendRunner
@@ -151,16 +138,20 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         recordedInputMetadata: [TypedVirtualPath: FileMetadata]
     ) throws -> ProcessResult {
         let handling: ResponseFileHandling = forceResponseFiles ? .forced : .disabled
-        let arguments = try resolver.resolveArgumentList(for: job, useResponseFiles: handling)
+        let arguments: [String] = try resolver.resolveArgumentList(
+            for: job,
+            useResponseFiles: handling
+        )
         return try execute(arguments: arguments, environment: [:])
     }
 
+    // SwiftDriver planning does not use these legacy/multi-job entry points.
     func execute(
         job: Job,
         forceResponseFiles: Bool,
         recordedInputModificationDates: [TypedVirtualPath: TimePoint]
     ) throws -> ProcessResult {
-        try execute(job: job, forceResponseFiles: forceResponseFiles, recordedInputMetadata: [:])
+        fatalError("Unsupported legacy SwiftDriver executor entry point")
     }
 
     func execute(
@@ -170,21 +161,7 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         forceResponseFiles: Bool,
         recordedInputMetadata: [TypedVirtualPath: FileMetadata]
     ) throws {
-        switch workload.kind {
-        case .all(let jobs):
-            for job in jobs {
-                let args = try resolver.resolveArgumentList(for: job, useResponseFiles: .disabled)
-                delegate.jobStarted(job: job, arguments: args, pid: 0)
-                let result = try execute(
-                    job: job,
-                    forceResponseFiles: forceResponseFiles,
-                    recordedInputMetadata: recordedInputMetadata
-                )
-                delegate.jobFinished(job: job, result: result, pid: 0)
-            }
-        case .incremental:
-            throw MobileSwiftDriverPlannerError.unsupportedPlanningWorkload
-        }
+        fatalError("SwiftDriver planning unexpectedly requested workload execution")
     }
 
     func execute(
@@ -194,13 +171,7 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         forceResponseFiles: Bool,
         recordedInputModificationDates: [TypedVirtualPath: TimePoint]
     ) throws {
-        try execute(
-            workload: workload,
-            delegate: delegate,
-            numParallelJobs: numParallelJobs,
-            forceResponseFiles: forceResponseFiles,
-            recordedInputMetadata: [:]
-        )
+        fatalError("Unsupported legacy SwiftDriver executor entry point")
     }
 
     func execute(
@@ -210,13 +181,7 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         forceResponseFiles: Bool,
         recordedInputModificationDates: [TypedVirtualPath: TimePoint]
     ) throws {
-        try execute(
-            workload: .all(jobs),
-            delegate: delegate,
-            numParallelJobs: numParallelJobs,
-            forceResponseFiles: forceResponseFiles,
-            recordedInputMetadata: [:]
-        )
+        fatalError("Unsupported legacy SwiftDriver executor entry point")
     }
 
     func checkNonZeroExit(args: String..., environment: [String: String]) throws -> String {
@@ -239,8 +204,11 @@ private final class InProcessPlanningExecutor: DriverExecutor {
 
     func description(of job: Job, forceResponseFiles: Bool) throws -> String {
         let handling: ResponseFileHandling = forceResponseFiles ? .forced : .disabled
-        return try resolver.resolveArgumentList(for: job, useResponseFiles: handling)
-            .joined(separator: " ")
+        let arguments: [String] = try resolver.resolveArgumentList(
+            for: job,
+            useResponseFiles: handling
+        )
+        return arguments.joined(separator: " ")
     }
 
     private func execute(arguments: [String], environment: [String: String]) throws -> ProcessResult {
@@ -268,8 +236,9 @@ private final class InProcessPlanningExecutor: DriverExecutor {
     }
 }
 
-/// Tiny frontend-only loader used by SwiftDriver's planning queries. It captures
-/// stdout as well as stderr because `-print-target-info` returns JSON on stdout.
+/// Frontend-only dylib loader for SwiftDriver's planning queries. Unlike the
+/// normal compile bridge it captures stdout too, because -print-target-info
+/// returns JSON there.
 private final class EmbeddedSwiftFrontendRunner {
     private typealias NativeRun = @convention(c) (
         Int32,
@@ -284,9 +253,7 @@ private final class EmbeddedSwiftFrontendRunner {
         self.runFunction = runFunction
     }
 
-    deinit {
-        dlclose(handle)
-    }
+    deinit { dlclose(handle) }
 
     static func loadFromApplicationBundle(
         bundle: Bundle = .main,
@@ -363,22 +330,7 @@ private final class EmbeddedSwiftFrontendRunner {
             throw MobileSwiftDriverPlannerError.streamCaptureFailed(captured)
         }
 
-        let exitCode: Int32
-        do {
-            exitCode = try body()
-        } catch {
-            fflush(nil)
-            _ = dup2(savedStdout, STDOUT_FILENO)
-            _ = dup2(savedStderr, STDERR_FILENO)
-            close(savedStdout)
-            close(savedStderr)
-            close(stdoutFD)
-            close(stderrFD)
-            try? manager.removeItem(at: stdoutURL)
-            try? manager.removeItem(at: stderrURL)
-            throw error
-        }
-
+        let exitCode = try body()
         fflush(nil)
         _ = dup2(savedStdout, STDOUT_FILENO)
         _ = dup2(savedStderr, STDERR_FILENO)
