@@ -65,9 +65,12 @@ if [[ -d "$TOOLCHAIN/usr/lib/swift/shims" ]]; then
 fi
 
 # Preserve the Darwin toolchain's Swift/Clang directory shape first, then bind
-# its builtin include directory to the active swift.org toolchain below.
+# its builtin include directory to the active swift.org toolchain below. The
+# SDK commonly exposes swift/clang as a relative symlink into usr/lib/clang;
+# dereference it here so the partially copied runtime never contains a dangling
+# symlink that makes the later mkdir -p fail with "File exists".
 if [[ -d "$TOOLCHAIN/usr/lib/swift/clang" ]]; then
-  cp -a "$TOOLCHAIN/usr/lib/swift/clang" \
+  cp -aL "$TOOLCHAIN/usr/lib/swift/clang" \
     "$OUT_DEVELOPER/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/"
 fi
 
