@@ -6,6 +6,14 @@ if(NOT TARGET swiftFrontendTool)
   message(FATAL_ERROR "XToolCompilerEngine requires the Swift swiftFrontendTool target")
 endif()
 
+if(NOT TARGET clangFrontendTool)
+  message(FATAL_ERROR "XToolCompilerEngine requires the Clang clangFrontendTool target")
+endif()
+
+if(NOT TARGET lldMachO)
+  message(FATAL_ERROR "XToolCompilerEngine requires the LLD lldMachO target. Reconfigure the existing LLVM graph with LLVM_ENABLE_PROJECTS=clang;lld.")
+endif()
+
 # We configure the iOS target from a Linux host. LLVM's generic host options
 # treat CMAKE_SYSTEM_NAME=iOS as non-Darwin in a few places, which can leak the
 # ELF-only -Wl,-z,defs flag into shared-library links. Strip that flag only in
@@ -43,15 +51,22 @@ target_include_directories(XToolCompilerEngine PRIVATE
   "${LLVM_EXTERNAL_SWIFT_SOURCE_DIR}/include"
   "${LLVM_MAIN_INCLUDE_DIR}"
   "${LLVM_BINARY_DIR}/include"
+  "${LLVM_MAIN_SRC_DIR}/../clang/include"
+  "${LLVM_BINARY_DIR}/tools/clang/include"
+  "${LLVM_MAIN_SRC_DIR}/../lld/include"
+  "${LLVM_BINARY_DIR}/tools/lld/include"
 )
 
 target_compile_features(XToolCompilerEngine PRIVATE cxx_std_17)
 target_compile_definitions(XToolCompilerEngine PRIVATE
-  XTOOL_COMPILER_ENGINE_VERSION="swift-6.3.2-RELEASE"
+  XTOOL_COMPILER_ENGINE_VERSION="swift-6.3.2-RELEASE+clang+lld"
 )
 
 target_link_libraries(XToolCompilerEngine PRIVATE
   swiftFrontendTool
+  clangFrontendTool
+  lldMachO
+  lldCommon
 )
 
 # The Linux Swift/Clang driver otherwise falls back to the host ELF linker. A
