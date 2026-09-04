@@ -9,6 +9,8 @@ LOG="$ROOT/.build/xtool-mobile-one-shot.log"
 CONFIGURATION="${CONFIGURATION:-debug}"
 TRIPLE="${TRIPLE:-arm64-apple-ios}"
 RUNTIME_ARCHIVE="$ROOT/.build/XToolMobileRuntime.tar"
+RUNTIME_REV="swift-sdk-v2"
+RUNTIME_REV_STAMP="$ROOT/.build/.xtool-mobile-runtime-rev"
 IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
 COMPILER_CONFIG_REV="ios-clang-lld-v1"
@@ -54,6 +56,12 @@ compiler_engine_is_current() {
   [[ -f "$ENGINE" ]] || return 1
   [[ -f "$COMPILER_ENGINE_STAMP" ]] || return 1
   [[ "$(cat "$COMPILER_ENGINE_STAMP" 2>/dev/null || true)" == "$COMPILER_ENGINE_REV" ]]
+}
+
+runtime_is_current() {
+  [[ -f "$RUNTIME_ARCHIVE" ]] || return 1
+  [[ -f "$RUNTIME_REV_STAMP" ]] || return 1
+  [[ "$(cat "$RUNTIME_REV_STAMP" 2>/dev/null || true)" == "$RUNTIME_REV" ]]
 }
 
 run_all() {
@@ -119,14 +127,15 @@ run_all() {
     --swift-sdk "$TRIPLE" \
     -c "$CONFIGURATION"
 
-  if [[ ! -f "$RUNTIME_ARCHIVE" ]]; then
-    echo
-    echo '=== bundled Darwin runtime ==='
-    bash scripts/prepare-mobile-runtime.sh
+  echo
+  echo '=== bundled Darwin runtime ==='
+  if runtime_is_current; then
+    echo "cache hit: runtime revision $RUNTIME_REV"
+    echo "$RUNTIME_ARCHIVE"
   else
-    echo
-    echo '=== bundled Darwin runtime ==='
-    echo "cache hit: $RUNTIME_ARCHIVE"
+    echo "refreshing runtime for revision $RUNTIME_REV"
+    bash scripts/prepare-mobile-runtime.sh
+    printf '%s\n' "$RUNTIME_REV" > "$RUNTIME_REV_STAMP"
   fi
 
   echo
@@ -145,6 +154,7 @@ run_all() {
   echo '=== SUCCESS ==='
   echo "Compiler engine: $ENGINE"
   echo "Compiler rev:    $COMPILER_ENGINE_REV"
+  echo "Runtime rev:     $RUNTIME_REV"
   echo "Unsigned IPA:    $IPA"
 }
 
