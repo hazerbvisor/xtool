@@ -387,6 +387,8 @@ private struct MobileHomeView: View {
                     try engine.run(plan)
                 }.value
 
+                appendCompilerDiagnostics(result.standardError)
+
                 guard result.succeeded else {
                     appendLog("compile: frontend exited with code \(result.exitCode)")
                     isCompilingHello = false
@@ -411,6 +413,19 @@ private struct MobileHomeView: View {
                 appendLog("compile failed: \(String(describing: error))")
                 isCompilingHello = false
             }
+        }
+    }
+
+    private func appendCompilerDiagnostics(_ data: Data) {
+        guard !data.isEmpty else {
+            appendLog("compile diagnostics: <none captured>")
+            return
+        }
+
+        appendLog("compile diagnostics:")
+        let text = String(decoding: data, as: UTF8.self)
+        for line in text.split(whereSeparator: \.isNewline) {
+            appendLog("  \(line)")
         }
     }
 
