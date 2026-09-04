@@ -2,8 +2,8 @@ import Foundation
 
 /// A concrete Swift frontend invocation prepared for the in-process compiler bridge.
 ///
-/// This type deliberately contains no subprocess logic. The same argument list can
-/// later be passed to Swift's frontend library entry point from a C++ bridge.
+/// This type deliberately contains no subprocess logic. The same argument list is
+/// passed directly to Swift's frontend library entry point from the C++ bridge.
 public struct MobileCompilerPlan: Sendable, Hashable {
     public let sourceURL: URL
     public let objectURL: URL
@@ -28,14 +28,13 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// Writes a tiny Swift source file and prepares the exact argument list
-    /// consumed by `swift::performFrontend` to emit an arm64 iOS object file.
+    /// Writes the normal-SDK Swift probe used by the iPad IDE.
     ///
-    /// This first bootstrap probe deliberately uses `-parse-stdlib` and a source
-    /// file that does not reference Swift standard-library types. That isolates the
-    /// in-process frontend/IRGen path from Xcode SDK textual-module compatibility:
-    /// if this emits Hello.o, XTool has proven native AOT compilation on iPadOS.
-    /// Normal SDK-backed Swift compilation remains a separate compatibility step.
+    /// The earlier bootstrap version of this method deliberately used
+    /// `-parse-stdlib`. That milestone is complete: XTool has already emitted a
+    /// real arm64 iOS object on-device. This plan now mirrors the Darwin Swift
+    /// SDK configuration used by the successful SwiftPM cross-build and forces
+    /// Foundation, UIKit and SwiftUI to load through the embedded frontend.
     ///
     /// Important: `-frontend` is a Swift driver dispatch flag, not a frontend
     /// argument. The desktop driver strips it before calling `performFrontend`,
@@ -46,8 +45,9 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         deploymentTarget: String = "16.0",
         fileManager: FileManager = .default
     ) throws -> Self {
-        try toolchain.validate(fileManager: fileManager)
-        let sdk = try toolchain.iPhoneOSSDK(fileManager: fileManager)
+        let configuration = try toolchain.mobileSwiftSDKConfiguration(
+            fileManager: fileManager
+        )
 
         try fileManager.createDirectory(
             at: workspace,
@@ -76,18 +76,100 @@ public struct MobileCompilerPlan: Sendable, Hashable {
 
         let source = workspace.appendingPathComponent("Hello.swift")
         let object = workspace.appendingPathComponent("Hello.o")
+        let target = "arm64-apple-ios\(deploymentTarget)"
+
+        // Referencing one type from each module makes this a real Apple SDK
+        // compatibility test rather than an import that can be optimized away.
+        let sourceText = """
+        import Foundation
+        import UIKit
+        import SwiftUI
+
+        public func xtoolCompilerProbe() {
+            _ = NSObject.self
+            _ = UIView.self
+            _ = Text.self
+        }
+        """
+        try Data(sourceText.utf8).write(to: source, options: .atomic)
+        try? fileManager.removeItem(at: object)
+
+        var arguments = [
+            "-c",
+            "-primary-file", source.path,
+            "-target", target,
+            "-sdk", configuration.sdkURL.path,
+            "-resource-dir", configuration.swiftResourceDirectory.path,
+            "-module-cache-path", moduleCache.path,
+            "-sdk-module-cache-path", sdkModuleCache.path,
+            "-module-name", "XToolCompilerProbe",
+            "-swift-version", "6",
+            "-enable-objc-interop",
+            "-enable-cross-import-overlays",
+            "-disable-modules-validate-system-headers",
+        ]
+
+        // These are the include paths encoded in xtool's swift-sdk.json and
+        // consumed by SwiftPM for the already-working Linux -> iOS app build.
+        for path in configuration.includeSearchPaths {
+            arguments += ["-I", path.path]
+        }
+
+        // Ensure ClangImporter uses the target SDK and the Swift-sibling Clang
+        // builtin headers copied into the Darwin runtime. Accidentally reaching
+        // host builtin headers is a known cause of misleading SDK/compiler
+        // mismatch diagnostics during Foundation/UIKit imports.
+        arguments += [
+            "-Xcc", "-isysroot",
+            "-Xcc", configuration.sdkURL.path,
+        ]
+        if let clangHeaders = configuration.clangBuiltinHeaders {
+            arguments += [
+                "-Xcc", "-isystem",
+                "-Xcc", clangHeaders.path,
+            ]
+        }
+
+        arguments += ["-o", object.path]
+
+        return Self(
+            sourceURL: source,
+            objectURL: object,
+            sdkURL: configuration.sdkURL,
+            swiftResourceDirectory: configuration.swiftResourceDirectory,
+            targetTriple: target,
+            arguments: arguments
+        )
+    }
+
+    /// Keeps the original stdlib-free probe available for diagnostics without
+    /// regressing the normal IDE build path back to bootstrap mode.
+    public static func stdlibFreeBootstrap(
+        toolchain: PreparedToolchain,
+        workspace: URL,
+        deploymentTarget: String = "16.0",
+        fileManager: FileManager = .default
+    ) throws -> Self {
+        try toolchain.validate(fileManager: fileManager)
+        let sdk = try toolchain.iPhoneOSSDK(fileManager: fileManager)
+
+        try fileManager.createDirectory(
+            at: workspace,
+            withIntermediateDirectories: true
+        )
+        let moduleCache = workspace.appendingPathComponent("ModuleCache", isDirectory: true)
+        let sdkModuleCache = workspace.appendingPathComponent("SDKModuleCache", isDirectory: true)
+        try fileManager.createDirectory(at: moduleCache, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: sdkModuleCache, withIntermediateDirectories: true)
+
+        let source = workspace.appendingPathComponent("Bootstrap.swift")
+        let object = workspace.appendingPathComponent("Bootstrap.o")
         let resourceDirectory = toolchain.toolchainDirectory
             .appendingPathComponent("usr/lib/swift", isDirectory: true)
         let target = "arm64-apple-ios\(deploymentTarget)"
 
-        // Keep the bootstrap source independent of the implicit Swift module.
-        // `()` is a builtin tuple type, so this can reach IRGen without importing
-        // Apple SDK Swift.swiftinterface files produced by a different swiftlang build.
-        let sourceText = """
-        public func xtoolCompilerProbe() {
-        }
-        """
-        try Data(sourceText.utf8).write(to: source, options: .atomic)
+        try Data("public func xtoolCompilerBootstrapProbe() {}\n".utf8)
+            .write(to: source, options: .atomic)
         try? fileManager.removeItem(at: object)
 
         let arguments = [
@@ -99,7 +181,7 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-resource-dir", resourceDirectory.path,
             "-module-cache-path", moduleCache.path,
             "-sdk-module-cache-path", sdkModuleCache.path,
-            "-module-name", "XToolCompilerProbe",
+            "-module-name", "XToolCompilerBootstrapProbe",
             "-o", object.path,
         ]
 
