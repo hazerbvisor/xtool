@@ -48,6 +48,26 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             withIntermediateDirectories: true
         )
 
+        // Swift and Clang normally fall back to ~/.cache for implicit module
+        // artifacts. That path is outside XTool Mobile's writable iOS sandbox.
+        // Keep every compiler cache under the per-project workspace instead.
+        let moduleCache = workspace.appendingPathComponent(
+            "ModuleCache",
+            isDirectory: true
+        )
+        let sdkModuleCache = workspace.appendingPathComponent(
+            "SDKModuleCache",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: moduleCache,
+            withIntermediateDirectories: true
+        )
+        try fileManager.createDirectory(
+            at: sdkModuleCache,
+            withIntermediateDirectories: true
+        )
+
         let source = workspace.appendingPathComponent("Hello.swift")
         let object = workspace.appendingPathComponent("Hello.o")
         let resourceDirectory = toolchain.toolchainDirectory
@@ -68,6 +88,8 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-target", target,
             "-sdk", sdk.path,
             "-resource-dir", resourceDirectory.path,
+            "-module-cache-path", moduleCache.path,
+            "-sdk-module-cache-path", sdkModuleCache.path,
             "-module-name", "XToolCompilerProbe",
             "-o", object.path,
         ]
