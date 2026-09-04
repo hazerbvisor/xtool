@@ -122,6 +122,15 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-I", platformSwiftResources.path,
         ]
 
+        // swiftc normally synthesizes these frontend-only SDK identity flags.
+        // Because XTool calls performFrontend directly, provide them ourselves.
+        if let sdkVersion = configuration.targetSDKVersion {
+            arguments += ["-target-sdk-version", sdkVersion]
+        }
+        if let sdkName = configuration.targetSDKName {
+            arguments += ["-target-sdk-name", sdkName]
+        }
+
         // These are the include paths encoded in xtool's swift-sdk.json and
         // consumed by SwiftPM for the already-working Linux -> iOS app build.
         for path in configuration.includeSearchPaths {
