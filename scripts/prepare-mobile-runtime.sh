@@ -7,7 +7,8 @@ TOOLCHAIN="$DEVELOPER/Toolchains/XcodeDefault.xctoolchain"
 OUT_ROOT="${1:-$PWD/.build/XToolMobileRuntime}"
 OUT_DEVELOPER="$OUT_ROOT/Developer"
 ARCHIVE="$OUT_ROOT.tar"
-RUNTIME_REV="swift-sdk-v3-host-clang"
+RUNTIME_REV="swift-sdk-v4-swift-6.3.2-bound"
+REQUIRED_HOST_SWIFT="6.3.2"
 
 if [[ ! -d "$DEVELOPER/Platforms/iPhoneOS.platform" ]]; then
   echo "error: missing iPhoneOS.platform under $DEVELOPER" >&2
@@ -25,11 +26,24 @@ if [[ -z "$HOST_SWIFTC" || ! -x "$HOST_SWIFTC" ]]; then
   exit 1
 fi
 
+HOST_SWIFT_VERSION="$($HOST_SWIFTC --version 2>&1 | head -n 1 || true)"
+if [[ "$HOST_SWIFT_VERSION" != *"Swift version $REQUIRED_HOST_SWIFT"* ]]; then
+  echo "error: Xcode 26.5 mobile runtime currently requires host Swift $REQUIRED_HOST_SWIFT" >&2
+  echo "active swiftc: $HOST_SWIFTC" >&2
+  echo "reported:      ${HOST_SWIFT_VERSION:-unknown}" >&2
+  echo "Select/install Swift $REQUIRED_HOST_SWIFT, then rerun the mobile alignment script." >&2
+  exit 1
+fi
+
 # xcross binds an extracted Xcode SDK to the active Swift toolchain by replacing
 # Xcode's builtin Clang headers with the headers from Swift's sibling Clang.
 # Swift's frontend imports these headers while rebuilding textual SDK modules;
 # mixing Apple/Xcode builtin headers with a swift.org frontend can produce the
 # misleading "Please select a toolchain which matches the SDK" diagnostic.
+#
+# Xcode 26.5's SDK interfaces identify themselves as Apple Swift 6.3.2. The
+# matching xcross configuration is upstream Swift 6.3.2 plus these rebound
+# builtin headers, so keep the runtime and embedded frontend on that pair.
 HOST_SWIFTC_REAL="$(readlink -f "$HOST_SWIFTC" 2>/dev/null || printf '%s' "$HOST_SWIFTC")"
 HOST_SWIFT_BIN="$(dirname "$HOST_SWIFTC_REAL")"
 HOST_CLANG="${XTOOL_HOST_CLANG:-$HOST_SWIFT_BIN/clang}"
@@ -102,7 +116,7 @@ done
 printf '%s\n' "$RUNTIME_REV" > "$OUT_ROOT/XToolRuntimeRevision.txt"
 {
   echo "swiftc: $HOST_SWIFTC_REAL"
-  "$HOST_SWIFTC" --version 2>/dev/null || true
+  echo "$HOST_SWIFT_VERSION"
   echo
   echo "clang: $HOST_CLANG"
   "$HOST_CLANG" --version 2>/dev/null | head -n 1 || true
@@ -117,14 +131,15 @@ This bundle intentionally does not contain a runnable swift/swiftc/swift-fronten
 The compiler implementation is embedded into xtool and invoked in-process.
 Swift SDK metadata is preserved so the mobile frontend can mirror the same
 cross-SDK configuration used by the successful desktop/Linux xtool build.
-The bundled Swift Clang builtin headers are rebound to the host swift.org
-compiler toolchain, matching the cross-SDK preparation used by xcross.
+The bundled Swift Clang builtin headers are rebound to the host Swift 6.3.2
+compiler toolchain, matching the Xcode 26.5 cross-SDK preparation used by xcross.
 EOF
 
 echo "Prepared runtime tree:"
 du -sh "$OUT_ROOT"
 echo "Runtime revision: $RUNTIME_REV"
 echo "Bound swiftc: $HOST_SWIFTC_REAL"
+echo "Bound version: $HOST_SWIFT_VERSION"
 echo "Bound clang:  $HOST_CLANG"
 echo "Bound headers: $HOST_CLANG_INCLUDE"
 [[ -f "$OUT_ROOT/swift-sdk.json" ]] && echo "Swift SDK metadata: included" || echo "Swift SDK metadata: legacy fallback"
