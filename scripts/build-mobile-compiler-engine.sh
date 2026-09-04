@@ -161,6 +161,7 @@ configure_engine() {
   echo "Swift check:        forced valid for cross-compile"
   echo "cmark:              in-tree arm64 iOS external project"
   echo "XTool engine:       in-tree final dylib target"
+  echo "Clang + LLD:        enabled in the base LLVM graph"
   echo "Clang shared tools: disabled (libclang, IndexStore, clang-shlib)"
   echo "LLVM host tools:    excluded from install/build"
   echo "jobs later:         $JOBS"
@@ -193,7 +194,7 @@ configure_engine() {
     -DCMAKE_INSTALL_NAME_TOOL="$INSTALL_NAME_TOOL" \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTING=OFF \
-    -DLLVM_ENABLE_PROJECTS=clang \
+    -DLLVM_ENABLE_PROJECTS="clang;lld" \
     -DLLVM_EXTERNAL_PROJECTS="cmark;swift;xtoolcompiler" \
     -DLLVM_EXTERNAL_CMARK_SOURCE_DIR="$SRC_ROOT/cmark" \
     -DLLVM_EXTERNAL_SWIFT_SOURCE_DIR="$SRC_ROOT/swift" \
