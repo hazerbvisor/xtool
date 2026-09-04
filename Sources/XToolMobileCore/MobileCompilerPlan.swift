@@ -28,8 +28,12 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// Writes a tiny Swift source file and prepares the exact frontend job that
-    /// should emit an arm64 iOS object file.
+    /// Writes a tiny Swift source file and prepares the exact argument list
+    /// consumed by `swift::performFrontend` to emit an arm64 iOS object file.
+    ///
+    /// Important: `-frontend` is a Swift driver dispatch flag, not a frontend
+    /// argument. The desktop driver strips it before calling `performFrontend`,
+    /// so the in-process mobile bridge must not include it here.
     public static func helloWorld(
         toolchain: PreparedToolchain,
         workspace: URL,
@@ -59,7 +63,6 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         try? fileManager.removeItem(at: object)
 
         let arguments = [
-            "-frontend",
             "-c",
             "-primary-file", source.path,
             "-target", target,
@@ -80,11 +83,11 @@ public struct MobileCompilerPlan: Sendable, Hashable {
     }
 }
 
-/// Describes the ABI boundary the next native milestone will implement.
+/// Describes the ABI boundary the native compiler engine implements.
 ///
-/// Swift's compiler frontend exposes a library-level `swift::performFrontend`
-/// path internally. The mobile bridge will adapt this Swift-friendly request to
-/// that C++ entry point instead of starting `swift-frontend` as a child process.
+/// Swift's compiler frontend exposes the library-level `swift::performFrontend`
+/// entry point. The mobile bridge passes frontend arguments directly to that C++
+/// entry point instead of starting `swift-frontend` as a child process.
 public enum MobileCompilerBridgeContract {
     public static let backendName = "Swift FrontendTool / performFrontend"
     public static let executionModel = "in-process AOT"
