@@ -6,12 +6,13 @@ import XToolMobileCore
 struct XToolMobileApp: App {
     var body: some Scene {
         WindowGroup {
-            MobileHomeView()
+            MobileIDEView()
+                .preferredColorScheme(.dark)
         }
     }
 }
 
-private struct MobileHomeView: View {
+private struct MobileIDEView: View {
     private let capabilities = MobilePlatformCapabilities.current()
 
     @State private var project: MobileProject?
@@ -31,158 +32,51 @@ private struct MobileHomeView: View {
     @State private var isCompilingHello = false
     @State private var isRunningNativeProbe = false
 
+    @State private var navigatorVisible = true
+    @State private var inspectorVisible = true
+    @State private var consoleVisible = true
+    @State private var navigatorSearch = ""
+    @State private var navigatorEntries: [IDEFileEntry] = []
+    @State private var documents: [IDEDocument] = []
+    @State private var activeDocumentID: URL?
+    @State private var selectedInspectorTab: InspectorTab = .file
+    @State private var selectedConsoleTab: ConsoleTab = .build
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Project") {
-                    Button {
-                        showingProjectImporter = true
-                    } label: {
-                        Label("Choose Project Folder", systemImage: "folder")
-                    }
+        VStack(spacing: 0) {
+            topToolbar
+            Divider()
 
-                    if let project {
-                        LabeledContent("Name", value: project.name)
-                        LabeledContent("Package.swift", value: "Found")
-                        LabeledContent("xtool.yml", value: project.hasXToolConfiguration ? "Found" : "Not present")
-                    } else {
-                        Text("Project import is optional for the first compiler test. Hello.swift runs from xtool's sandbox.")
-                            .foregroundStyle(.secondary)
+            HStack(spacing: 0) {
+                if navigatorVisible {
+                    navigatorPanel
+                        .frame(width: 245)
+                    Divider()
+                }
+
+                VStack(spacing: 0) {
+                    editorTabs
+                    Divider()
+                    editorSurface
+
+                    if consoleVisible {
+                        Divider()
+                        consolePanel
+                            .frame(height: 215)
                     }
                 }
 
-                Section("Darwin SDK") {
-                    if isPreparingBundledRuntime {
-                        HStack {
-                            ProgressView()
-                            Text("Unpacking bundled runtime…")
-                        }
-                    }
-
-                    if let toolchain {
-                        LabeledContent("Source", value: toolchainSource)
-                        LabeledContent("iPhoneOS SDK", value: sdkDisplayName(toolchain))
-                        LabeledContent(
-                            "Standalone frontend",
-                            value: toolchain.hasBundledSwiftFrontend ? "Present" : "Not required"
-                        )
-                    } else if !isPreparingBundledRuntime {
-                        Button {
-                            showingToolchainImporter = true
-                        } label: {
-                            Label("Import External Darwin SDK", systemImage: "shippingbox")
-                        }
-
-                        Text("No usable bundled runtime was found. You can still import the prepared runtime from Files.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Compiler Bridge Probe") {
-                    Button {
-                        runCompilerProbe()
-                    } label: {
-                        Label("Run SDK + VM Probe", systemImage: "checkmark.seal")
-                    }
-                    .disabled(toolchain == nil)
-
-                    LabeledContent("Execution", value: MobileCompilerBridgeContract.executionModel)
-                    LabeledContent("Backend", value: "FrontendTool")
-                    LabeledContent("Engine", value: compilerEngineStatus)
-                    LabeledContent(
-                        "Clang frontend",
-                        value: compilerEngine?.supportsClangFrontend == true ? "Ready" : "Not bundled"
-                    )
-                    LabeledContent(
-                        "Mach-O LLD",
-                        value: compilerEngine?.supportsMachOLLD == true ? "Ready" : "Not bundled"
-                    )
-                    LabeledContent("Architecture", value: capabilities.architecture)
-                    LabeledContent("iOS family", value: capabilities.isRunningOnIOSFamily ? "Yes" : "No")
-                    LabeledContent(
-                        "Physical memory",
-                        value: ByteCountFormatter.string(
-                            fromByteCount: Int64(capabilities.physicalMemory),
-                            countStyle: .memory
-                        )
-                    )
-                }
-
-                Section("Hello.swift AOT Job") {
-                    Button {
-                        prepareHelloCompilerJob()
-                    } label: {
-                        Label("Prepare Hello.swift", systemImage: "hammer.circle")
-                    }
-                    .disabled(toolchain == nil || isCompilingHello || isRunningNativeProbe)
-
-                    Button {
-                        compileHello()
-                    } label: {
-                        if isCompilingHello {
-                            HStack {
-                                ProgressView()
-                                Text("Compiling Hello.swift…")
-                            }
-                        } else {
-                            Label("Compile Hello.swift", systemImage: "play.circle.fill")
-                        }
-                    }
-                    .disabled(helloPlan == nil || compilerEngine == nil || isCompilingHello || isRunningNativeProbe)
-
-                    if let helloPlan {
-                        LabeledContent("Target", value: helloPlan.targetTriple)
-                        LabeledContent("Source", value: helloPlan.sourceURL.lastPathComponent)
-                        LabeledContent("Output", value: helloPlan.objectURL.lastPathComponent)
-                        Text(
-                            compilerEngine == nil
-                                ? "The frontend job is ready. Bundle libXToolCompilerEngine.dylib to execute it in-process."
-                                : "Compiler engine is loaded. Compile should produce a real arm64 iOS Hello.o without spawning a process."
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("C + Mach-O Bootstrap") {
-                    Button {
-                        runClangLLDProbe()
-                    } label: {
-                        if isRunningNativeProbe {
-                            HStack {
-                                ProgressView()
-                                Text("Compiling + linking C probe…")
-                            }
-                        } else {
-                            Label("Run C + LLD Probe", systemImage: "link.circle.fill")
-                        }
-                    }
-                    .disabled(
-                        toolchain == nil ||
-                        compilerEngine?.supportsClangFrontend != true ||
-                        compilerEngine?.supportsMachOLLD != true ||
-                        isRunningNativeProbe ||
-                        isCompilingHello
-                    )
-
-                    Text("Compiles Hello.c to an arm64 iOS object with embedded Clang, then links it to a Mach-O executable with embedded LLD. No subprocesses are used.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Build Log") {
-                    ScrollView {
-                        Text(logLines.joined(separator: "\n"))
-                            .font(.system(.footnote, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                    }
-                    .frame(minHeight: 220)
+                if inspectorVisible {
+                    Divider()
+                    inspectorPanel
+                        .frame(width: 270)
                 }
             }
-            .navigationTitle("xtool")
+
+            Divider()
+            statusBar
         }
+        .background(Color(uiColor: .systemBackground))
         .onAppear {
             discoverCompilerEngineIfNeeded()
             discoverBundledRuntimeIfNeeded()
@@ -202,6 +96,638 @@ private struct MobileHomeView: View {
             importToolchain(result)
         }
     }
+
+    // MARK: - IDE chrome
+
+    private var topToolbar: some View {
+        HStack(spacing: 10) {
+            Button {
+                navigatorVisible.toggle()
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .frame(width: 30, height: 30)
+            }
+            .help("Toggle Project Navigator")
+
+            Button {
+                showingProjectImporter = true
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .frame(width: 30, height: 30)
+            }
+            .help("Open Project")
+
+            Divider()
+                .frame(height: 24)
+
+            Button {
+                runCurrentBuild()
+            } label: {
+                Group {
+                    if isBuilding {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "play.fill")
+                    }
+                }
+                .frame(width: 32, height: 32)
+            }
+            .disabled(toolchain == nil || compilerEngine == nil || isBuilding)
+            .keyboardShortcut("b", modifiers: .command)
+            .help("Build Current Bootstrap Target (⌘B)")
+
+            Button {
+                saveActiveDocument()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+                    .frame(width: 30, height: 30)
+            }
+            .disabled(activeDocument == nil || activeDocument?.isDirty != true)
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Save (⌘S)")
+
+            HStack(spacing: 7) {
+                Image(systemName: "hammer.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(project?.name ?? "Compiler Bootstrap")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Text("arm64 iOS")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 7))
+
+            Spacer()
+
+            buildStatusPill
+
+            Button {
+                consoleVisible.toggle()
+            } label: {
+                Image(systemName: "rectangle.bottomthird.inset.filled")
+                    .frame(width: 30, height: 30)
+            }
+            .help("Toggle Debug Area")
+
+            Button {
+                inspectorVisible.toggle()
+            } label: {
+                Image(systemName: "sidebar.right")
+                    .frame(width: 30, height: 30)
+            }
+            .help("Toggle Inspector")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .background(.ultraThinMaterial)
+    }
+
+    private var buildStatusPill: some View {
+        HStack(spacing: 7) {
+            Image(systemName: engineReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(engineReady ? .green : .orange)
+            Text(isBuilding ? "Building…" : (engineReady ? "Ready" : "Engine setup"))
+                .font(.caption.weight(.medium))
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(.thinMaterial, in: Capsule())
+    }
+
+    private var navigatorPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("PROJECT")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    showingProjectImporter = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Filter", text: $navigatorSearch)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 29)
+            .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 8)
+            .padding(.bottom, 7)
+
+            Divider()
+
+            if project == nil {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "folder")
+                        .font(.system(size: 35))
+                        .foregroundStyle(.secondary)
+                    Text("Open a Swift project")
+                        .font(.callout.weight(.medium))
+                    Text("Files appear here and open directly in the editor.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Open Project…") {
+                        showingProjectImporter = true
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                }
+                .padding(18)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shippingbox.fill")
+                                .foregroundStyle(.secondary)
+                            Text(project?.name ?? "Project")
+                                .font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(height: 27)
+
+                        ForEach(filteredNavigatorEntries) { entry in
+                            Button {
+                                if !entry.isDirectory {
+                                    openFile(entry)
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Color.clear.frame(width: CGFloat(entry.depth) * 13, height: 1)
+                                    Image(systemName: entry.systemImage)
+                                        .frame(width: 15)
+                                        .foregroundStyle(entry.isDirectory ? .secondary : .primary)
+                                    Text(entry.name)
+                                        .font(.system(size: 12))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 25)
+                                .contentShape(Rectangle())
+                                .background(activeDocumentID == entry.url ? Color.accentColor.opacity(0.20) : .clear)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(entry.isDirectory)
+                        }
+                    }
+                }
+            }
+        }
+        .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    private var editorTabs: some View {
+        HStack(spacing: 0) {
+            if documents.isEmpty {
+                Text("No Editor")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(documents) { document in
+                            Button {
+                                activeDocumentID = document.id
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: document.language == .swift ? "swift" : "chevron.left.forwardslash.chevron.right")
+                                        .font(.caption)
+                                    Text(document.title)
+                                        .font(.system(size: 12, weight: activeDocumentID == document.id ? .medium : .regular))
+                                    if document.isDirty {
+                                        Circle()
+                                            .frame(width: 6, height: 6)
+                                    }
+                                    Button {
+                                        closeDocument(document.id)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 8, weight: .bold))
+                                            .frame(width: 16, height: 16)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 35)
+                                .background(activeDocumentID == document.id ? Color(uiColor: .secondarySystemBackground) : Color.clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider()
+                                .frame(height: 35)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 35)
+        .background(Color(uiColor: .tertiarySystemBackground))
+    }
+
+    @ViewBuilder
+    private var editorSurface: some View {
+        if let document = activeDocument {
+            VStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    Image(systemName: "shippingbox")
+                        .font(.caption2)
+                    Text(project?.name ?? "CompilerProbe")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8))
+                    Text(document.title)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(document.language.rawValue)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 29)
+                .background(Color(uiColor: .secondarySystemBackground))
+
+                IDECodeEditor(
+                    text: activeTextBinding,
+                    language: document.language
+                )
+            }
+        } else {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "hammer.circle")
+                    .font(.system(size: 55, weight: .thin))
+                    .foregroundStyle(.secondary)
+                Text("XTool Mobile")
+                    .font(.title2.weight(.semibold))
+                Text("Open a source file from the navigator or prepare the compiler probe.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Button("Open Project") {
+                        showingProjectImporter = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Open Swift Probe") {
+                        prepareHelloCompilerJob(openInEditor: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(toolchain == nil)
+                }
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(uiColor: .secondarySystemBackground))
+        }
+    }
+
+    private var inspectorPanel: some View {
+        VStack(spacing: 0) {
+            Picker("Inspector", selection: $selectedInspectorTab) {
+                ForEach(InspectorTab.allCases) { tab in
+                    Image(systemName: tab.systemImage)
+                        .tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    switch selectedInspectorTab {
+                    case .file:
+                        fileInspector
+                    case .target:
+                        targetInspector
+                    case .build:
+                        buildInspector
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    @ViewBuilder
+    private var fileInspector: some View {
+        inspectorHeading("File Inspector")
+        if let document = activeDocument {
+            inspectorRow("Name", document.title)
+            inspectorRow("Type", document.language.rawValue)
+            inspectorRow("State", document.isDirty ? "Modified" : "Saved")
+            inspectorRow("Path", document.url.path)
+            Button {
+                saveActiveDocument()
+            } label: {
+                Label("Save File", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!document.isDirty)
+        } else {
+            Text("Select a file to inspect its properties.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var targetInspector: some View {
+        inspectorHeading("Target")
+        inspectorRow("Architecture", capabilities.architecture)
+        inspectorRow("Platform", capabilities.isRunningOnIOSFamily ? "iOS / iPadOS" : "Unknown")
+        inspectorRow("Deployment", "iOS 16.0")
+        inspectorRow("SDK", toolchain.map(sdkDisplayName) ?? "Preparing…")
+        inspectorRow("SDK Source", toolchainSource)
+
+        Divider()
+        inspectorHeading("Compiler Engine")
+        inspectorRow("Swift", compilerEngine == nil ? "Missing" : "Ready")
+        inspectorRow("Clang", compilerEngine?.supportsClangFrontend == true ? "Ready" : "Missing")
+        inspectorRow("Mach-O LLD", compilerEngine?.supportsMachOLLD == true ? "Ready" : "Missing")
+        inspectorRow("Version", compilerEngine?.version ?? compilerEngineStatus)
+    }
+
+    @ViewBuilder
+    private var buildInspector: some View {
+        inspectorHeading("Build Tools")
+        Button {
+            runCompilerProbe()
+        } label: {
+            Label("Validate SDK + VM", systemImage: "checkmark.seal")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .disabled(toolchain == nil)
+
+        Button {
+            prepareHelloCompilerJob(openInEditor: true)
+        } label: {
+            Label("Prepare Swift Probe", systemImage: "swift")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .disabled(toolchain == nil || isBuilding)
+
+        Button {
+            compileHello()
+        } label: {
+            Label("Compile Swift → .o", systemImage: "hammer")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .disabled(helloPlan == nil || compilerEngine == nil || isBuilding)
+
+        Button {
+            runClangLLDProbe()
+        } label: {
+            Label("C → .o → Mach-O", systemImage: "link")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!nativePipelineReady || isBuilding)
+
+        Button {
+            showingToolchainImporter = true
+        } label: {
+            Label("Import Darwin SDK…", systemImage: "shippingbox")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func inspectorHeading(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func inspectorRow(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var consolePanel: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Picker("Console", selection: $selectedConsoleTab) {
+                    ForEach(ConsoleTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 190)
+
+                Spacer()
+
+                if isBuilding {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Building")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    logLines.removeAll(keepingCapacity: true)
+                    appendLog("console cleared")
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(Color(uiColor: .tertiarySystemBackground))
+
+            ScrollView {
+                Text(consoleText)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(uiColor: .secondarySystemBackground))
+        }
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 14) {
+            Label(engineReady ? "Compiler Ready" : "Compiler Setup", systemImage: engineReady ? "checkmark.circle" : "gear")
+            Text("arm64")
+            Text("iOS 16.0+")
+            if let toolchain {
+                Text(sdkDisplayName(toolchain))
+            }
+            Spacer()
+            if let activeDocument {
+                Text(activeDocument.language.rawValue.uppercased())
+                Text(activeDocument.isDirty ? "Modified" : "Saved")
+            }
+            Text("UTF-8")
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .frame(height: 24)
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Editor state
+
+    private var activeDocument: IDEDocument? {
+        guard let activeDocumentID else { return nil }
+        return documents.first(where: { $0.id == activeDocumentID })
+    }
+
+    private var activeTextBinding: Binding<String> {
+        Binding(
+            get: { activeDocument?.text ?? "" },
+            set: { newValue in
+                guard let activeDocumentID,
+                      let index = documents.firstIndex(where: { $0.id == activeDocumentID }) else { return }
+                documents[index].text = newValue
+                documents[index].isDirty = true
+            }
+        )
+    }
+
+    private var filteredNavigatorEntries: [IDEFileEntry] {
+        guard !navigatorSearch.isEmpty else { return navigatorEntries }
+        return navigatorEntries.filter {
+            $0.name.localizedCaseInsensitiveContains(navigatorSearch) ||
+            $0.relativePath.localizedCaseInsensitiveContains(navigatorSearch)
+        }
+    }
+
+    private var isBuilding: Bool {
+        isCompilingHello || isRunningNativeProbe
+    }
+
+    private var engineReady: Bool {
+        compilerEngine != nil && toolchain != nil
+    }
+
+    private var nativePipelineReady: Bool {
+        toolchain != nil &&
+        compilerEngine?.supportsClangFrontend == true &&
+        compilerEngine?.supportsMachOLLD == true
+    }
+
+    private var consoleText: String {
+        switch selectedConsoleTab {
+        case .build:
+            return logLines.joined(separator: "\n")
+        case .console:
+            return "XTool runtime console\n\n" + logLines.suffix(30).joined(separator: "\n")
+        }
+    }
+
+    private func openFile(_ entry: IDEFileEntry) {
+        if documents.contains(where: { $0.id == entry.url }) {
+            activeDocumentID = entry.url
+            return
+        }
+
+        do {
+            let text = try String(contentsOf: entry.url, encoding: .utf8)
+            documents.append(IDEDocument(url: entry.url, text: text))
+            activeDocumentID = entry.url
+            appendLog("editor: opened \(entry.relativePath)")
+        } catch {
+            appendLog("editor: could not open \(entry.relativePath): \(error)")
+        }
+    }
+
+    private func openGeneratedFile(_ url: URL) {
+        if let existingIndex = documents.firstIndex(where: { $0.id == url }) {
+            if let text = try? String(contentsOf: url, encoding: .utf8) {
+                documents[existingIndex].text = text
+                documents[existingIndex].isDirty = false
+            }
+            activeDocumentID = url
+            return
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            documents.append(IDEDocument(url: url, text: text))
+            activeDocumentID = url
+        }
+    }
+
+    private func saveActiveDocument() {
+        guard let activeDocumentID,
+              let index = documents.firstIndex(where: { $0.id == activeDocumentID }) else { return }
+        do {
+            try documents[index].text.write(to: documents[index].url, atomically: true, encoding: .utf8)
+            documents[index].isDirty = false
+            appendLog("editor: saved \(documents[index].title)")
+        } catch {
+            appendLog("editor: save failed: \(error)")
+        }
+    }
+
+    private func closeDocument(_ id: URL) {
+        guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        documents.remove(at: index)
+        if activeDocumentID == id {
+            activeDocumentID = documents.indices.contains(index)
+                ? documents[index].id
+                : documents.last?.id
+        }
+    }
+
+    private func runCurrentBuild() {
+        consoleVisible = true
+        selectedConsoleTab = .build
+        if nativePipelineReady {
+            runClangLLDProbe()
+        } else if helloPlan != nil {
+            compileHello()
+        } else {
+            prepareHelloCompilerJob(openInEditor: true)
+            compileHello()
+        }
+    }
+
+    // MARK: - Compiler/runtime discovery
 
     private func discoverCompilerEngineIfNeeded() {
         guard !attemptedCompilerEngineDiscovery else { return }
@@ -309,8 +835,12 @@ private struct MobileHomeView: View {
             try selected.validate()
             project = selected
             projectScopeURL = url
+            navigatorEntries = IDEWorkspaceScanner.scan(root: url)
+            documents.removeAll()
+            activeDocumentID = nil
             appendLog("project: \(selected.name)")
             appendLog("Package.swift: found")
+            appendLog("navigator: \(navigatorEntries.filter { !$0.isDirectory }.count) editable files")
         } catch {
             appendLog("project import failed: \(String(describing: error))")
         }
@@ -334,6 +864,8 @@ private struct MobileHomeView: View {
             appendLog("Darwin SDK import failed: \(String(describing: error))")
         }
     }
+
+    // MARK: - Existing proven compiler bridge
 
     private func runCompilerProbe() {
         guard let toolchain else {
@@ -364,7 +896,7 @@ private struct MobileHomeView: View {
         }
     }
 
-    private func prepareHelloCompilerJob() {
+    private func prepareHelloCompilerJob(openInEditor: Bool = false) {
         guard let toolchain else {
             appendLog("hello: no Darwin SDK selected")
             return
@@ -402,6 +934,9 @@ private struct MobileHomeView: View {
                     ? "hello: awaiting bundled compiler engine"
                     : "hello: ready to execute performFrontend in-process"
             )
+            if openInEditor {
+                openGeneratedFile(plan.sourceURL)
+            }
         } catch {
             appendLog("hello preparation failed: \(String(describing: error))")
         }
@@ -418,6 +953,7 @@ private struct MobileHomeView: View {
         }
 
         isCompilingHello = true
+        consoleVisible = true
         appendLog("compile: entering in-process Swift frontend...")
 
         Task {
@@ -492,6 +1028,7 @@ private struct MobileHomeView: View {
             )
 
             isRunningNativeProbe = true
+            consoleVisible = true
             appendLog("native probe: source: \(plan.sourceURL.path)")
             appendLog("native probe: target: \(plan.targetTriple)")
             appendLog("native probe: entering in-process Clang frontend...")
@@ -566,6 +1103,8 @@ private struct MobileHomeView: View {
         }
     }
 
+    // MARK: - Logging/utilities
+
     private func appendCompilerDiagnostics(_ data: Data) {
         guard !data.isEmpty else {
             appendLog("compile diagnostics: <none captured>")
@@ -603,4 +1142,27 @@ private struct MobileHomeView: View {
     private func releaseSecurityScope(for url: URL?) {
         url?.stopAccessingSecurityScopedResource()
     }
+}
+
+private enum InspectorTab: String, CaseIterable, Identifiable {
+    case file
+    case target
+    case build
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .file: return "doc.text.magnifyingglass"
+        case .target: return "scope"
+        case .build: return "hammer"
+        }
+    }
+}
+
+private enum ConsoleTab: String, CaseIterable, Identifiable {
+    case build = "Build"
+    case console = "Console"
+
+    var id: String { rawValue }
 }
