@@ -67,6 +67,11 @@ public struct PreparedToolchain: Sendable, Hashable {
     /// This deliberately does NOT require `swift-frontend`. The Android xtool
     /// Darwin SDK keeps the Linux host compiler under /opt/swift while the
     /// artifact bundle provides the iPhoneOS target SDK/runtime data.
+    ///
+    /// External SDK folders usually have no XToolRuntimeRevision.txt and remain
+    /// valid. If a revision stamp *is* present, however, this is one of XTool's
+    /// extracted bundled runtimes and stale revisions must be rejected so the
+    /// app re-extracts the newly bundled archive after an update.
     public func validate(fileManager: FileManager = .default) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: developerDirectory.path, isDirectory: &isDirectory),
@@ -77,6 +82,14 @@ public struct PreparedToolchain: Sendable, Hashable {
         guard fileManager.fileExists(atPath: iPhoneOSPlatform.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             throw MobileBuildBackendError.toolchainInvalid("iPhoneOS.platform is missing")
+        }
+
+        if fileManager.fileExists(atPath: runtimeRevisionURL.path),
+           runtimeRevision(fileManager: fileManager)
+                != Self.expectedBundledRuntimeRevision {
+            throw MobileBuildBackendError.toolchainInvalid(
+                "Bundled runtime revision is stale"
+            )
         }
 
         _ = try iPhoneOSSDK(fileManager: fileManager)
