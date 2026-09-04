@@ -58,8 +58,17 @@ target_include_directories(XToolCompilerEngine PRIVATE
 )
 
 target_compile_features(XToolCompilerEngine PRIVATE cxx_std_17)
+
+# Keep this overrideable so patch-release frontend experiments can reuse the
+# preserved LLVM/Clang/LLD object graph without hardcoding a misleading version
+# into the dylib. Existing 6.3.2 builds keep their current value by default.
+set(XTOOL_COMPILER_ENGINE_VERSION
+  "swift-6.3.2-RELEASE+clang+lld"
+  CACHE STRING
+  "Version string reported by the embedded XTool compiler engine"
+)
 target_compile_definitions(XToolCompilerEngine PRIVATE
-  XTOOL_COMPILER_ENGINE_VERSION="swift-6.3.2-RELEASE+clang+lld"
+  XTOOL_COMPILER_ENGINE_VERSION="${XTOOL_COMPILER_ENGINE_VERSION}"
 )
 
 target_link_libraries(XToolCompilerEngine PRIVATE
