@@ -2,8 +2,8 @@ import Foundation
 
 /// A concrete Swift frontend invocation prepared for the in-process compiler bridge.
 ///
-/// This type deliberately contains no subprocess logic. The same argument list is
-/// passed directly to Swift's frontend library entry point from the C++ bridge.
+/// The normal mobile path is now planned by SwiftDriver. XTool no longer tries
+/// to reproduce the driver's frontend argument synthesis by hand.
 public struct MobileCompilerPlan: Sendable, Hashable {
     public let sourceURL: URL
     public let objectURL: URL
@@ -28,16 +28,12 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         self.arguments = arguments
     }
 
-    /// Writes the normal-SDK Swift probe used by the iPad IDE.
+    /// Writes the normal-SDK Swift probe used by the iPad IDE and asks the real
+    /// Swift 6.3.2 driver to create the frontend job.
     ///
-    /// This intentionally mirrors the minimal Swift driver job that is already
-    /// known to compile successfully against the same Darwin artifact bundle on
-    /// Linux. The first goal is to prove normal Swift stdlib loading and emit a
-    /// real iOS object in-process; Apple-framework imports are tested separately.
-    ///
-    /// Important: `-frontend` is a Swift driver dispatch flag, not a frontend
-    /// argument. The desktop driver strips it before calling `performFrontend`,
-    /// so the in-process mobile bridge must not include it here.
+    /// This mirrors the host `swiftc` route that already compiles successfully
+    /// against the same iPhoneOS 26.5 SDK. SwiftDriver performs all frontend
+    /// option synthesis; XTool then executes that job through performFrontend().
     public static func helloWorld(
         toolchain: PreparedToolchain,
         workspace: URL,
@@ -53,33 +49,10 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             withIntermediateDirectories: true
         )
 
-        // Keep module caches inside the writable app container. A failed textual
-        // interface rebuild from an older probe must not poison this run.
-        let moduleCache = workspace.appendingPathComponent(
-            "ModuleCache-UpstreamPrebuilt",
-            isDirectory: true
-        )
-        let sdkModuleCache = workspace.appendingPathComponent(
-            "SDKModuleCache-UpstreamPrebuilt",
-            isDirectory: true
-        )
-        try fileManager.createDirectory(
-            at: moduleCache,
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: sdkModuleCache,
-            withIntermediateDirectories: true
-        )
-
         let source = workspace.appendingPathComponent("Hello.swift")
         let object = workspace.appendingPathComponent("Hello.o")
         let target = "arm64-apple-ios\(deploymentTarget)"
-        let platformSwiftResources = configuration.iPhoneOSSwiftResourceDirectory
 
-        // Match the host-side probe that succeeds with upstream Swift 6.3.2 and
-        // iPhoneOS 26.5. This still requires the Swift standard library, but keeps
-        // Foundation/UIKit/SwiftUI out of the equation until stdlib loading works.
         let sourceText = """
         public func xtoolHello() -> Int {
             return 42
@@ -88,68 +61,15 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         try Data(sourceText.utf8).write(to: source, options: .atomic)
         try? fileManager.removeItem(at: object)
 
-        var arguments = [
-            "-c",
-            "-primary-file", source.path,
-            "-target", target,
-            "-Xllvm", "-aarch64-use-tbi",
-            "-enable-objc-interop",
-            "-sdk", configuration.sdkURL.path,
-            "-I", platformSwiftResources.path,
-        ]
-
-        // These are the include paths encoded in xtool's swift-sdk.json and
-        // consumed by the already-working Linux -> iOS cross-build.
-        for path in configuration.includeSearchPaths {
-            arguments += ["-I", path.path]
-        }
-
-        arguments += [
-            "-no-color-diagnostics",
-            "-Xcc", "-fno-color-diagnostics",
-            "-empty-abi-descriptor",
-            "-resource-dir", configuration.swiftResourceDirectory.path,
-            "-module-cache-path", moduleCache.path,
-            "-sdk-module-cache-path", sdkModuleCache.path,
-            "-no-auto-bridging-header-chaining",
-            "-module-name", "main",
-            // Make module selection visible in the app log and require a usable
-            // serialized module before considering a textual interface fallback.
-            "-Rmodule-loading",
-            "-module-load-mode", "prefer-serialized",
-        ]
-
-        // The Apple-provided prebuilt module is serialized by Apple's Swift
-        // distribution. XTool's embedded compiler is upstream swift.org 6.3.2,
-        // so the runtime-preparation step now builds a matching Swift.swiftmodule
-        // from the SDK's textual interface on Linux and stores it here instead:
-        //   iphoneos/xtool-prebuilt-modules/<sdk-version>/Swift.swiftmodule/...
-        if let sdkVersion = configuration.targetSDKVersion {
-            let prebuiltModules = platformSwiftResources
-                .appendingPathComponent("xtool-prebuilt-modules", isDirectory: true)
-                .appendingPathComponent(sdkVersion, isDirectory: true)
-            arguments += [
-                "-prebuilt-module-cache-path", prebuiltModules.path,
-                "-target-sdk-version", sdkVersion,
-            ]
-        }
-        if let sdkName = configuration.targetSDKName {
-            arguments += ["-target-sdk-name", sdkName]
-        }
-
-        // Mirror the successful host frontend's ClangImporter setup.
-        arguments += [
-            "-Xcc", "-isysroot",
-            "-Xcc", configuration.sdkURL.path,
-        ]
-        if let clangHeaders = configuration.clangBuiltinHeaders {
-            arguments += [
-                "-Xcc", "-isystem",
-                "-Xcc", clangHeaders.path,
-            ]
-        }
-
-        arguments += ["-o", object.path]
+        let arguments = try MobileSwiftDriverPlanner.frontendArguments(
+            sourceURL: source,
+            objectURL: object,
+            sdkURL: configuration.sdkURL,
+            swiftResourceDirectory: configuration.swiftResourceDirectory,
+            targetTriple: target,
+            includeSearchPaths: configuration.includeSearchPaths,
+            clangBuiltinHeaders: configuration.clangBuiltinHeaders
+        )
 
         return Self(
             sourceURL: source,
@@ -161,8 +81,7 @@ public struct MobileCompilerPlan: Sendable, Hashable {
         )
     }
 
-    /// Keeps the original stdlib-free probe available for diagnostics without
-    /// regressing the normal IDE build path back to bootstrap mode.
+    /// Keeps the original stdlib-free probe available as a low-level diagnostic.
     public static func stdlibFreeBootstrap(
         toolchain: PreparedToolchain,
         workspace: URL,
@@ -215,12 +134,7 @@ public struct MobileCompilerPlan: Sendable, Hashable {
     }
 }
 
-/// Describes the ABI boundary the native compiler engine implements.
-///
-/// Swift's compiler frontend exposes the library-level `swift::performFrontend`
-/// entry point. The mobile bridge passes frontend arguments directly to that C++
-/// entry point instead of starting `swift-frontend` as a child process.
 public enum MobileCompilerBridgeContract {
-    public static let backendName = "Swift FrontendTool / performFrontend"
-    public static let executionModel = "in-process AOT"
+    public static let backendName = "SwiftDriver -> FrontendTool / performFrontend"
+    public static let executionModel = "driver-planned in-process AOT"
 }
