@@ -8,15 +8,19 @@ SWIFT_TOP="$SRC_ROOT/swift/CMakeLists.txt"
 SWIFT_UUID="$SRC_ROOT/swift/cmake/modules/FindUUID.cmake"
 SWIFT_BASIC="$SRC_ROOT/swift/lib/Basic/CMakeLists.txt"
 SWIFT_FRONTEND_TOOL="$SRC_ROOT/swift/lib/FrontendTool/CMakeLists.txt"
+SWIFT_LANG_OPTIONS="$SRC_ROOT/swift/lib/Basic/LangOptions.cpp"
+SWIFT_TYPECHECK_MACROS="$SRC_ROOT/swift/lib/Sema/TypeCheckMacros.cpp"
 CMARK_CMAKE="$SRC_ROOT/cmark/src/CMakeLists.txt"
 
 [[ -f "$SWIFT_TOP" ]] || { echo "error: Swift CMakeLists.txt not found: $SWIFT_TOP" >&2; exit 1; }
 [[ -f "$SWIFT_UUID" ]] || { echo "error: Swift FindUUID.cmake not found: $SWIFT_UUID" >&2; exit 1; }
 [[ -f "$SWIFT_BASIC" ]] || { echo "error: Swift Basic CMakeLists.txt not found: $SWIFT_BASIC" >&2; exit 1; }
 [[ -f "$SWIFT_FRONTEND_TOOL" ]] || { echo "error: Swift FrontendTool CMakeLists.txt not found: $SWIFT_FRONTEND_TOOL" >&2; exit 1; }
+[[ -f "$SWIFT_LANG_OPTIONS" ]] || { echo "error: Swift LangOptions.cpp not found: $SWIFT_LANG_OPTIONS" >&2; exit 1; }
+[[ -f "$SWIFT_TYPECHECK_MACROS" ]] || { echo "error: Swift TypeCheckMacros.cpp not found: $SWIFT_TYPECHECK_MACROS" >&2; exit 1; }
 [[ -f "$CMARK_CMAKE" ]] || { echo "error: swift-cmark CMakeLists.txt not found: $CMARK_CMAKE" >&2; exit 1; }
 
-python3 - "$SWIFT_TOP" "$SWIFT_UUID" "$SWIFT_BASIC" "$SWIFT_FRONTEND_TOOL" "$CMARK_CMAKE" <<'PY'
+python3 - "$SWIFT_TOP" "$SWIFT_UUID" "$SWIFT_BASIC" "$SWIFT_FRONTEND_TOOL" "$CMARK_CMAKE" "$SWIFT_LANG_OPTIONS" "$SWIFT_TYPECHECK_MACROS" <<'PY'
 from pathlib import Path
 import sys
 
@@ -25,6 +29,8 @@ uuid_file = Path(sys.argv[2])
 basic_file = Path(sys.argv[3])
 frontend_file = Path(sys.argv[4])
 cmark_file = Path(sys.argv[5])
+lang_options_file = Path(sys.argv[6])
+typecheck_macros_file = Path(sys.argv[7])
 
 # XTool needs Swift's compiler libraries and SwiftCompilerSources, but not the
 # command-line compiler executables. Keeping SWIFT_INCLUDE_TOOLS=ON is important
@@ -111,6 +117,61 @@ else:
     s = s.replace(marker, '\n' + conditional + '\n' + marker, 1)
     frontend_file.write_text(s)
     print('Swift FrontendTool immediate-mode gate: applied')
+
+# The Apple iOS SDK's Swift module interfaces contain macro declarations even
+# when the user's source never expands a macro. Keep macro syntax enabled in the
+# compact AOT compiler so those declarations can be parsed/imported.
+s = lang_options_file.read_text()
+old = '''  // Special case: remove macro support if the compiler wasn't built with a
+  // host Swift.
+#if !SWIFT_BUILD_SWIFT_SYNTAX
+  disableFeature(Feature::Macros);
+  disableFeature(Feature::FreestandingExpressionMacros);
+  disableFeature(Feature::AttachedMacros);
+  disableFeature(Feature::ExtensionMacros);
+#endif
+'''
+new = '''  // XTool Mobile AOT compatibility: keep the macro language features enabled
+  // even when the SwiftSyntax/plugin implementation is not linked. Apple SDK
+  // Swift interfaces contain macro declarations that must be parsed/imported,
+  // even for source files that never expand or execute a macro. Actual external
+  // macro expansion still requires the SwiftSyntax/plugin implementation.
+#if !SWIFT_BUILD_SWIFT_SYNTAX
+  // Intentionally do not disable Feature::Macros or its declaration roles.
+#endif
+'''
+if new in s:
+    print('Swift SDK macro language features: already patched')
+elif old in s:
+    lang_options_file.write_text(s.replace(old, new, 1))
+    print('Swift SDK macro language features: patched')
+else:
+    raise SystemExit('error: expected Swift macro-disable block not found')
+
+# Without SwiftSyntax, Swift 6.3.2 otherwise diagnoses each macro declaration's
+# definition as unsupported. Treat the definition as opaque/undefined so SDK
+# module interfaces can load. Actual macro expansion remains unavailable.
+s = typecheck_macros_file.read_text()
+old = '''#else
+  macro->diagnose(diag::macro_unsupported);
+  return MacroDefinition::forInvalid();
+#endif
+'''
+new = '''#else
+  // XTool Mobile AOT compatibility: allow importing macro declarations from
+  // Apple SDK module interfaces without bundling SwiftSyntax/plugin expansion.
+  // The declaration remains visible, but its implementation is intentionally
+  // unavailable in this compact compiler configuration.
+  return MacroDefinition::forUndefined();
+#endif
+'''
+if new in s:
+    print('Swift SDK macro-definition fallback: already patched')
+elif old in s:
+    typecheck_macros_file.write_text(s.replace(old, new, 1))
+    print('Swift SDK macro-definition fallback: patched')
+else:
+    raise SystemExit('error: expected Swift MacroDefinitionRequest fallback not found')
 
 # CMake models iOS executables as bundles. swift-cmark's install rule omits a
 # bundle destination, even though we never install it during this build.
