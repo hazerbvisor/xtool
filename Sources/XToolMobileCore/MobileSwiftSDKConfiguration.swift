@@ -28,6 +28,13 @@ public struct MobileSwiftSDKConfiguration: Sendable, Hashable {
         self.clangBuiltinHeaders = clangBuiltinHeaders
         self.cameFromSwiftSDKMetadata = cameFromSwiftSDKMetadata
     }
+
+    /// Canonical platform-specific Swift resource directory. Apple toolchains
+    /// place serialized iPhoneOS modules here, while the SDK also carries
+    /// textual fallback interfaces under <sdk>/usr/lib/swift.
+    public var iPhoneOSSwiftResourceDirectory: URL {
+        swiftResourceDirectory.appendingPathComponent("iphoneos", isDirectory: true)
+    }
 }
 
 public extension PreparedToolchain {
@@ -155,11 +162,11 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
         )
 
         let moduleCache = workspace.appendingPathComponent(
-            "ModuleCache",
+            "ModuleCache-Serialized",
             isDirectory: true
         )
         let sdkModuleCache = workspace.appendingPathComponent(
-            "SDKModuleCache",
+            "SDKModuleCache-Serialized",
             isDirectory: true
         )
         try fileManager.createDirectory(
@@ -177,7 +184,7 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
 
         // Referencing one type from each module forces all three module graphs
         // to load while keeping the probe tiny and independent of app runtime
-        // behavior. Unlike helloWorld(), this intentionally imports Swift.
+        // behavior. Unlike the bootstrap probe, this intentionally imports Swift.
         let sourceText = """
         import Foundation
         import UIKit
@@ -204,6 +211,8 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
             "-enable-objc-interop",
             "-enable-cross-import-overlays",
             "-disable-modules-validate-system-headers",
+            "-module-load-mode", "prefer-serialized",
+            "-I", configuration.iPhoneOSSwiftResourceDirectory.path,
         ]
 
         for path in configuration.includeSearchPaths {
