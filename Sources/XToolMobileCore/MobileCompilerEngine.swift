@@ -84,9 +84,19 @@ public final class MobileCompilerEngine: @unchecked Sendable {
         }
     }
 
-    /// Executes one already-prepared `-frontend` job in-process.
+    /// Executes one already-prepared Swift frontend job in-process.
+    ///
+    /// `swift::performFrontend` expects the arguments that come *after* the
+    /// desktop driver's `-frontend` dispatch marker. Strip that marker here as
+    /// a defensive compatibility measure so older cached plans cannot feed a
+    /// driver-only option to the embedded frontend.
     public func run(_ plan: MobileCompilerPlan) throws -> MobileBuildResult {
-        let exitCode = try withCStringArray(plan.arguments) { argc, argv in
+        var frontendArguments = plan.arguments
+        if frontendArguments.first == "-frontend" {
+            frontendArguments.removeFirst()
+        }
+
+        let exitCode = try withCStringArray(frontendArguments) { argc, argv in
             runFrontendFunction(argc, argv)
         }
         return MobileBuildResult(exitCode: exitCode)
