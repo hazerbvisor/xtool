@@ -5,19 +5,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_ROOT="${XTOOL_COMPILER_WORK:-$ROOT/.build/mobile-compiler-engine}"
 LANG_OPTIONS="$WORK_ROOT/src/swift/lib/Basic/LangOptions.cpp"
 TYPECHECK_MACROS="$WORK_ROOT/src/swift/lib/Sema/TypeCheckMacros.cpp"
+TYPECHECK_DECL_PRIMARY="$WORK_ROOT/src/swift/lib/Sema/TypeCheckDeclPrimary.cpp"
 BUILD_ROOT="$WORK_ROOT/build-ios"
 JOBS="${XTOOL_COMPILER_JOBS:-2}"
 
 [[ -f "$LANG_OPTIONS" ]] || { echo "error: Swift LangOptions.cpp not found: $LANG_OPTIONS" >&2; exit 1; }
 [[ -f "$TYPECHECK_MACROS" ]] || { echo "error: Swift TypeCheckMacros.cpp not found: $TYPECHECK_MACROS" >&2; exit 1; }
+[[ -f "$TYPECHECK_DECL_PRIMARY" ]] || { echo "error: Swift TypeCheckDeclPrimary.cpp not found: $TYPECHECK_DECL_PRIMARY" >&2; exit 1; }
 [[ -f "$BUILD_ROOT/build.ninja" ]] || { echo "error: existing compiler build not found: $BUILD_ROOT/build.ninja" >&2; exit 1; }
 
-python3 - "$LANG_OPTIONS" "$TYPECHECK_MACROS" <<'PY'
+python3 - "$LANG_OPTIONS" "$TYPECHECK_MACROS" "$TYPECHECK_DECL_PRIMARY" <<'PY'
 from pathlib import Path
 import sys
 
 lang_options = Path(sys.argv[1])
 typecheck_macros = Path(sys.argv[2])
+typecheck_decl_primary = Path(sys.argv[3])
 
 # 1) Keep macro declaration syntax enabled even when SwiftSyntax/plugin support
 # is intentionally not linked into the compact XTool AOT engine.
@@ -74,6 +77,34 @@ elif old in s:
     print('XTool macro-definition import fallback: applied')
 else:
     raise SystemExit('error: expected Swift MacroDefinitionRequest fallback not found')
+
+# 3) Type checking normally rejects an Undefined macro definition. That is the
+# right behaviour for user source, but imported Apple .swiftinterface modules
+# must remain loadable in this compact configuration. Suppress only that one
+# diagnostic for SourceFileKind::Interface; normal source files still diagnose
+# a missing macro definition and actual macro expansion remains unavailable.
+s = typecheck_decl_primary.read_text()
+old = '''    case MacroDefinition::Kind::Undefined:
+      MD->diagnose(diag::macro_must_be_defined, MD->getName());
+      break;
+'''
+new = '''    case MacroDefinition::Kind::Undefined:
+#if !SWIFT_BUILD_SWIFT_SYNTAX
+      if (auto *sourceFile = MD->getParentSourceFile();
+          sourceFile && sourceFile->Kind == SourceFileKind::Interface) {
+        break;
+      }
+#endif
+      MD->diagnose(diag::macro_must_be_defined, MD->getName());
+      break;
+'''
+if new in s:
+    print('XTool SDK interface undefined-macro diagnostic gate: already applied')
+elif old in s:
+    typecheck_decl_primary.write_text(s.replace(old, new, 1))
+    print('XTool SDK interface undefined-macro diagnostic gate: applied')
+else:
+    raise SystemExit('error: expected Swift macro undefined diagnostic block not found')
 PY
 
 echo
