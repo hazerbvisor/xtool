@@ -94,6 +94,34 @@ else()
   message(FATAL_ERROR "Swift runtime link helper is unavailable for XToolCompilerEngine")
 endif()
 
+# HOSTTOOLS normally derives its Swift runtime/compatibility search directory
+# from SWIFT_EXEC_FOR_SWIFT_MODULES. In this port that executable is the Linux
+# host Swift compiler (/opt/swift), so its derived `iphoneos` directory may not
+# exist. The actual iPhoneOS compatibility archives live in the extracted
+# Darwin/Xcode toolchain beside the SDK. Derive that Developer root from the SDK
+# path and add the real target runtime directory explicitly.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  get_filename_component(
+    _xtool_darwin_developer
+    "${CMAKE_OSX_SYSROOT}/../../../../.."
+    ABSOLUTE
+  )
+  set(
+    _xtool_darwin_swift_runtime
+    "${_xtool_darwin_developer}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos"
+  )
+  if(EXISTS "${_xtool_darwin_swift_runtime}")
+    target_link_directories(XToolCompilerEngine BEFORE PRIVATE
+      "${_xtool_darwin_swift_runtime}"
+      "${CMAKE_OSX_SYSROOT}/usr/lib/swift"
+    )
+  else()
+    message(WARNING
+      "XToolCompilerEngine could not find Darwin Swift runtime directory: ${_xtool_darwin_swift_runtime}"
+    )
+  endif()
+endif()
+
 # The Linux Swift/Clang driver otherwise falls back to the host ELF linker. A
 # stock Swift Linux ld64.lld is also intentionally blocked from iOS linking by
 # a downstream Swift LLVM patch, so the repair script can provide a source-
