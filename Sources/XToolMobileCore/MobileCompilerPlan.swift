@@ -108,6 +108,9 @@ public struct MobileCompilerPlan: Sendable, Hashable {
             "-enable-objc-interop",
             "-enable-cross-import-overlays",
             "-disable-modules-validate-system-headers",
+            // Emit the exact module/interface paths chosen by the frontend. This
+            // makes a failed probe actionable in one log instead of another blind run.
+            "-Rmodule-loading",
             // Apple SDKs carry both serialized modules and textual interfaces.
             // Our embedded frontend is built from the same OSS Swift release as
             // the phone toolchain but not Apple's swiftlang build, so prefer a
