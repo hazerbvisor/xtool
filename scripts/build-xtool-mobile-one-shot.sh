@@ -13,6 +13,8 @@ IPA="$ROOT/.build/XToolMobileApp-unsigned.ipa"
 IPA_ENGINE_PATH="Payload/XToolMobileApp.app/Frameworks/libXToolCompilerEngine.dylib"
 COMPILER_CONFIG_REV="ios-rpath-clang-shared-off-v1"
 COMPILER_CONFIG_STAMP="$WORK_ROOT/.xtool-compiler-config-rev"
+COMPILER_ENGINE_REV="sdk-macro-import-v2"
+COMPILER_ENGINE_STAMP="$WORK_ROOT/.xtool-compiler-engine-rev"
 
 mkdir -p "$ROOT/.build"
 
@@ -38,6 +40,12 @@ compiler_config_is_current() {
   grep -q 'XToolCompilerEngine' "$BUILD_ROOT/build.ninja"
 }
 
+compiler_engine_is_current() {
+  [[ -f "$ENGINE" ]] || return 1
+  [[ -f "$COMPILER_ENGINE_STAMP" ]] || return 1
+  [[ "$(cat "$COMPILER_ENGINE_STAMP" 2>/dev/null || true)" == "$COMPILER_ENGINE_REV" ]]
+}
+
 run_all() {
   cd "$ROOT"
 
@@ -48,15 +56,18 @@ run_all() {
   echo "app triple:    $TRIPLE"
   echo
 
-  if [[ -f "$ENGINE" ]]; then
+  if compiler_engine_is_current && compiler_config_is_current; then
     echo '=== compiler engine ==='
-    echo 'cache hit: final compiler dylib already exists'
+    echo "cache hit: compiler engine revision $COMPILER_ENGINE_REV"
     file "$ENGINE" 2>/dev/null || true
     ls -lh "$ENGINE"
   else
     if compiler_config_is_current; then
       echo '=== compiler configure ==='
       echo 'cache hit: current CMake graph already contains XToolCompilerEngine'
+      echo
+      echo '=== compiler source compatibility patches ==='
+      bash scripts/patch-mobile-compiler-ios-sources.sh
     else
       echo '=== compiler configure ==='
       bash scripts/run-mobile-compiler-engine.sh configure
@@ -65,6 +76,7 @@ run_all() {
 
     echo '=== compiler build ==='
     bash scripts/run-mobile-compiler-engine.sh build
+    printf '%s\n' "$COMPILER_ENGINE_REV" > "$COMPILER_ENGINE_STAMP"
   fi
 
   [[ -f "$ENGINE" ]] || {
@@ -105,6 +117,7 @@ run_all() {
   echo
   echo '=== SUCCESS ==='
   echo "Compiler engine: $ENGINE"
+  echo "Compiler rev:    $COMPILER_ENGINE_REV"
   echo "Unsigned IPA:    $IPA"
 }
 
