@@ -42,7 +42,27 @@ public struct MobileSwiftSDKConfiguration: Sendable, Hashable {
         let prefix = "iPhoneOS"
         guard stem.hasPrefix(prefix) else { return nil }
         let version = String(stem.dropFirst(prefix.count))
-        return version.isEmpty ? nil : version
+        if !version.isEmpty { return version }
+
+        let settingsURL = sdkURL.appendingPathComponent("SDKSettings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let settingsVersion = object["Version"] as? String,
+              !settingsVersion.isEmpty else {
+            return nil
+        }
+        return settingsVersion
+    }
+
+    /// XTool's serialized stdlib cache built by the matching upstream Swift
+    /// compiler on the Linux host. This must be passed explicitly to frontend
+    /// invocations; simply placing it under the resource directory does not make
+    /// FrontendTool discover this nonstandard cache automatically.
+    public var xtoolPrebuiltModuleCacheDirectory: URL? {
+        guard let version = targetSDKVersion else { return nil }
+        return iPhoneOSSwiftResourceDirectory
+            .appendingPathComponent("xtool-prebuilt-modules", isDirectory: true)
+            .appendingPathComponent(version, isDirectory: true)
     }
 
     /// Canonical SDK name normally synthesized by the Swift driver.
@@ -176,12 +196,14 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
             withIntermediateDirectories: true
         )
 
+        let sdkNamespace = configuration.targetSDKVersion ?? "unknown"
+        let runtimeNamespace = PreparedToolchain.expectedBundledRuntimeRevision
         let moduleCache = workspace.appendingPathComponent(
-            "ModuleCache-Serialized",
+            "ModuleCache-Serialized-\(sdkNamespace)-\(runtimeNamespace)",
             isDirectory: true
         )
         let sdkModuleCache = workspace.appendingPathComponent(
-            "SDKModuleCache-Serialized",
+            "SDKModuleCache-Serialized-\(sdkNamespace)-\(runtimeNamespace)",
             isDirectory: true
         )
         try fileManager.createDirectory(
@@ -227,10 +249,14 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
             "-enable-cross-import-overlays",
             "-disable-modules-validate-system-headers",
             "-Rmodule-loading",
+            "-Rmodule-interface-rebuild",
             "-module-load-mode", "prefer-serialized",
             "-I", configuration.iPhoneOSSwiftResourceDirectory.path,
         ]
 
+        if let prebuiltCache = configuration.xtoolPrebuiltModuleCacheDirectory {
+            arguments += ["-prebuilt-module-cache-path", prebuiltCache.path]
+        }
         if let sdkVersion = configuration.targetSDKVersion {
             arguments += ["-target-sdk-version", sdkVersion]
         }
@@ -248,6 +274,7 @@ public struct MobileSwiftSDKImportProbePlan: Sendable, Hashable {
         arguments += [
             "-Xcc", "-isysroot",
             "-Xcc", configuration.sdkURL.path,
+            "-Xcc", "-fmodules-cache-path=\(moduleCache.path)",
         ]
         if let clangHeaders = configuration.clangBuiltinHeaders {
             arguments += [
