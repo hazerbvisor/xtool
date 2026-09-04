@@ -39,8 +39,11 @@ run_bootstrap() {
   echo
 
   echo '=== source compatibility patches ==='
+  # The all-in-one iOS source patcher already includes the macro language and
+  # MacroDefinition fallback changes. Do not run the older declaration patch a
+  # second time here; doing so is redundant and made older patch revisions
+  # sensitive to harmless comment differences in LangOptions.cpp.
   bash scripts/patch-mobile-compiler-ios-sources.sh
-  bash scripts/patch-mobile-compiler-sdk-macro-declarations.sh
   bash scripts/patch-mobile-compiler-sdk-macro-interface.sh
 
   echo
