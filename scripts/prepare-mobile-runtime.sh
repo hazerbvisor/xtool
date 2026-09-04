@@ -259,6 +259,72 @@ fi
 rm -rf "$VALIDATION_ROOT"
 echo "Prebuilt Swift stdlib validation: PASS"
 
+# Go one step beyond the Hello.swift bootstrap and test the first real Apple SDK
+# imports now, on the build host, with the same upstream frontend and the exact
+# runtime tree that will be bundled into the IPA. This catches the next likely
+# class of failures (framework serialized-module rejection, Clang PCM/cache
+# issues, SDK search-path mistakes) before another install/device round-trip.
+SDK_IMPORT_ROOT="$OUT_ROOT/.host-sdk-import-validation"
+SDK_IMPORT_CACHE="$SDK_IMPORT_ROOT/ModuleCache"
+SDK_IMPORT_SDK_CACHE="$SDK_IMPORT_ROOT/SDKModuleCache"
+SDK_IMPORT_SOURCE="$SDK_IMPORT_ROOT/SDKImports.swift"
+SDK_IMPORT_OBJECT="$SDK_IMPORT_ROOT/SDKImports.o"
+SDK_IMPORT_STDERR="$SDK_IMPORT_ROOT/stderr.log"
+rm -rf "$SDK_IMPORT_ROOT"
+mkdir -p "$SDK_IMPORT_CACHE" "$SDK_IMPORT_SDK_CACHE"
+cat > "$SDK_IMPORT_SOURCE" <<'EOF'
+import Foundation
+import UIKit
+import SwiftUI
+
+public func xtoolSDKImportValidation() {
+  _ = NSObject.self
+  _ = UIView.self
+  _ = Text.self
+}
+EOF
+
+echo "Validating Foundation + UIKit + SwiftUI imports ..."
+if ! SWIFT_FORCE_MODULE_LOADING=prefer-serialized \
+"$HOST_SWIFTC" -frontend \
+  -c -primary-file "$SDK_IMPORT_SOURCE" \
+  -target arm64-apple-ios16.0 \
+  -Xllvm -aarch64-use-tbi \
+  -enable-objc-interop \
+  -enable-cross-import-overlays \
+  -sdk "$IOS_SDK" \
+  -resource-dir "$BOUND_SWIFT_RESOURCES" \
+  -I "$BOUND_IPHONEOS_SWIFT" \
+  -I "$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/usr/lib" \
+  -module-cache-path "$SDK_IMPORT_CACHE" \
+  -sdk-module-cache-path "$SDK_IMPORT_SDK_CACHE" \
+  -prebuilt-module-cache-path "$XTOOL_PREBUILT_ROOT" \
+  -module-load-mode prefer-serialized \
+  -disable-modules-validate-system-headers \
+  -target-sdk-version "$SDK_VERSION" \
+  -target-sdk-name "iphoneos$SDK_VERSION" \
+  -Xcc -isysroot \
+  -Xcc "$IOS_SDK" \
+  -Xcc "-fmodules-cache-path=$SDK_IMPORT_CACHE" \
+  -Xcc -isystem \
+  -Xcc "$BOUND_CLANG_INCLUDE" \
+  -module-name XToolSDKImportValidation \
+  -o "$SDK_IMPORT_OBJECT" \
+  2>"$SDK_IMPORT_STDERR"; then
+  echo "error: Foundation/UIKit/SwiftUI host validation failed" >&2
+  echo "--- validation diagnostics ---" >&2
+  tail -n 160 "$SDK_IMPORT_STDERR" >&2 || true
+  echo "--- end diagnostics ---" >&2
+  exit 1
+fi
+
+if [[ ! -s "$SDK_IMPORT_OBJECT" ]]; then
+  echo "error: Foundation/UIKit/SwiftUI validation returned success but produced no object" >&2
+  exit 1
+fi
+rm -rf "$SDK_IMPORT_ROOT"
+echo "Foundation/UIKit/SwiftUI validation: PASS"
+
 # SwiftPM's successful Linux -> iOS build is driven by these files. Keep them
 # in the mobile runtime so the in-process frontend can resolve the same SDK,
 # Swift resource, include and library paths instead of guessing them.
