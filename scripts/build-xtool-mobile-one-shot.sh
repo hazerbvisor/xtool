@@ -20,6 +20,30 @@ COMPILER_ENGINE_STAMP="$WORK_ROOT/.xtool-compiler-engine-rev"
 
 mkdir -p "$ROOT/.build"
 
+copy_ipa_to_downloads() {
+  local download_dir="${XTOOL_DOWNLOAD_DIR:-}"
+  local destination
+
+  if [[ -z "$download_dir" ]]; then
+    for candidate in "/sdcard/Download" "$HOME/storage/downloads"; do
+      if [[ -d "$candidate" && -w "$candidate" ]]; then
+        download_dir="$candidate"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$download_dir" ]]; then
+    echo "Downloads export: skipped (no writable Downloads directory found)"
+    echo "Set XTOOL_DOWNLOAD_DIR=/path/to/Downloads to enable automatic export."
+    return 0
+  fi
+
+  destination="$download_dir/$(basename "$IPA")"
+  cp -f "$IPA" "$destination"
+  echo "Downloads export: $destination"
+}
+
 verify_ipa_engine() {
   [[ -f "$IPA" ]] || { echo "error: final IPA missing: $IPA" >&2; return 1; }
   python3 - "$IPA" "$IPA_ENGINE_PATH" <<'PY'
@@ -149,6 +173,10 @@ run_all() {
   echo
   echo '=== IPA verification ==='
   verify_ipa_engine
+
+  echo
+  echo '=== Downloads export ==='
+  copy_ipa_to_downloads
 
   echo
   echo '=== SUCCESS ==='
