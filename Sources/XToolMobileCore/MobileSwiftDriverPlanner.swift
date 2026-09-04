@@ -28,6 +28,29 @@ enum MobileSwiftDriverPlanner {
             .deletingLastPathComponent()
         let compilerBin = toolchainUSR.appendingPathComponent("bin", isDirectory: true)
 
+        // The runtime builder compiles Apple's textual Swift stdlib interface
+        // once on the Linux host using the exact upstream Swift toolchain that
+        // also backs the embedded compiler. Always point FrontendTool at that
+        // distribution-matched cache. Without this explicit frontend option the
+        // embedded compiler falls back to the SDK's Apple Swift.swiftinterface.
+        let sdkVersion = try resolvedSDKVersion(sdkURL: sdkURL)
+        let prebuiltModuleCache = platformResources
+            .appendingPathComponent("xtool-prebuilt-modules", isDirectory: true)
+            .appendingPathComponent(sdkVersion, isDirectory: true)
+        let swiftModuleDirectory = prebuiltModuleCache
+            .appendingPathComponent("Swift.swiftmodule", isDirectory: true)
+        let swiftModuleCandidates = [
+            swiftModuleDirectory.appendingPathComponent("arm64e-apple-ios.swiftmodule"),
+            swiftModuleDirectory.appendingPathComponent("arm64-apple-ios.swiftmodule"),
+        ]
+        guard swiftModuleCandidates.contains(where: {
+            FileManager.default.fileExists(atPath: $0.path)
+        }) else {
+            throw MobileSwiftDriverPlannerError.missingPrebuiltSwiftModule(
+                swiftModuleCandidates
+            )
+        }
+
         // Never let Swift/Clang fall back to ~/.cache on iOS. That location is
         // outside the app's writable sandbox and causes SwiftShims PCM creation
         // to fail with EPERM. Keep both Swift and Clang module caches next to
@@ -72,7 +95,20 @@ enum MobileSwiftDriverPlanner {
                 "-Xcc", clangBuiltinHeaders.path,
             ]
         }
-        driverArguments += ["-o", objectURL.path]
+
+        // These are frontend-only options, so send them through -Xfrontend
+        // instead of relying on process environment inherited by SwiftDriver.
+        // The in-process frontend is not a child process and therefore does not
+        // automatically receive Driver.env.
+        driverArguments += [
+            "-Xfrontend", "-prebuilt-module-cache-path",
+            "-Xfrontend", prebuiltModuleCache.path,
+            "-Xfrontend", "-module-load-mode",
+            "-Xfrontend", "prefer-serialized",
+            "-Xfrontend", "-disable-modules-validate-system-headers",
+            "-Xfrontend", "-Rmodule-loading",
+            "-o", objectURL.path,
+        ]
 
         // SwiftDriver only needs a path identity. The executor below intercepts
         // the launch and enters xtool_swift_frontend_run in-process.
@@ -91,7 +127,7 @@ enum MobileSwiftDriverPlanner {
         )
 
         let jobs = try driver.planBuild()
-        guard let compileJob = jobs.first else {
+        guard let compileJob = jobs.first(where: { $0.kind == .compile }) else {
             throw MobileSwiftDriverPlannerError.noCompileJob
         }
 
@@ -109,6 +145,27 @@ enum MobileSwiftDriverPlanner {
         }
         return resolved
     }
+
+    private static func resolvedSDKVersion(sdkURL: URL) throws -> String {
+        let stem = sdkURL.deletingPathExtension().lastPathComponent
+        let prefix = "iPhoneOS"
+        if stem.hasPrefix(prefix) {
+            let suffix = String(stem.dropFirst(prefix.count))
+            if !suffix.isEmpty {
+                return suffix
+            }
+        }
+
+        let settingsURL = sdkURL.appendingPathComponent("SDKSettings.json")
+        if let data = try? Data(contentsOf: settingsURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let version = object["Version"] as? String,
+           !version.isEmpty {
+            return version
+        }
+
+        throw MobileSwiftDriverPlannerError.missingSDKVersion(sdkURL)
+    }
 }
 
 enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
@@ -120,6 +177,8 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
     case unsupportedTool(String)
     case frontendFailed(Int32, String)
     case streamCaptureFailed(Int32)
+    case missingSDKVersion(URL)
+    case missingPrebuiltSwiftModule([URL])
 
     var description: String {
         switch self {
@@ -139,6 +198,10 @@ enum MobileSwiftDriverPlannerError: Error, CustomStringConvertible {
             return "Swift frontend planning query failed with exit \(code): \(diagnostics)"
         case .streamCaptureFailed(let value):
             return "Could not capture SwiftDriver frontend output (errno \(value))"
+        case .missingSDKVersion(let sdkURL):
+            return "Could not determine SDK version for prebuilt modules: \(sdkURL.path)"
+        case .missingPrebuiltSwiftModule(let urls):
+            return "Prepared runtime is missing XTool's upstream Swift module. Searched: \(urls.map(\.path).joined(separator: ", "))"
         }
     }
 }
@@ -191,7 +254,7 @@ private final class InProcessPlanningExecutor: DriverExecutor {
         delegate: JobExecutionDelegate,
         numParallelJobs: Int,
         forceResponseFiles: Bool,
-        recordedInputModificationDates: [TypedVirtualPath: TimePoint]
+        recordedInputModificationDates: [TypedVirtualPath: FileMetadata]
     ) throws {
         fatalError("Unsupported legacy SwiftDriver executor entry point")
     }
