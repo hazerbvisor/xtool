@@ -35,6 +35,7 @@ endif()
 
 add_library(XToolCompilerEngine SHARED
   XToolCompilerEngine.cpp
+  ImmediateModeStubs.cpp
 )
 
 target_include_directories(XToolCompilerEngine PRIVATE
