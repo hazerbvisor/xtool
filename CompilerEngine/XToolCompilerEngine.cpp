@@ -4,6 +4,7 @@
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/FrontendTool/Utils.h"
 #include "lld/Common/Driver.h"
+#include "swift/Basic/InitializeSwiftModules.h"
 #include "swift/FrontendTool/FrontendTool.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -33,6 +34,17 @@ void initializeClangTargetsOnce() {
     });
 }
 
+void initializeSwiftCompilerModulesOnce() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        // The real swift-frontend driver always performs this registration
+        // before dispatching to performFrontend(). FrontendTool deliberately
+        // does not do it itself because that library is also linked by tools
+        // that do not embed Swift compiler modules.
+        initializeSwiftModules();
+    });
+}
+
 std::atomic<bool> gLLDCanRunAgain{true};
 
 } // namespace
@@ -44,6 +56,8 @@ extern "C" int32_t xtool_swift_frontend_run(
     if (argc < 0 || (argc > 0 && argv == nullptr)) {
         return 64;
     }
+
+    initializeSwiftCompilerModulesOnce();
 
     llvm::ArrayRef<const char *> arguments(argv, static_cast<size_t>(argc));
     const int32_t result = static_cast<int32_t>(
