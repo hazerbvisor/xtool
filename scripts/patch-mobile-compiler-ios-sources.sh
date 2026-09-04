@@ -140,13 +140,24 @@ new = '''  // XTool Mobile AOT compatibility: keep the macro language features e
   // Intentionally do not disable Feature::Macros or its declaration roles.
 #endif
 '''
+macro_disable_calls = (
+    'disableFeature(Feature::Macros);',
+    'disableFeature(Feature::FreestandingExpressionMacros);',
+    'disableFeature(Feature::AttachedMacros);',
+    'disableFeature(Feature::ExtensionMacros);',
+)
 if new in s:
     print('Swift SDK macro language features: already patched')
 elif old in s:
     lang_options_file.write_text(s.replace(old, new, 1))
     print('Swift SDK macro language features: patched')
+elif not any(call in s for call in macro_disable_calls):
+    # A dedicated compatibility patch may already have replaced the same block
+    # with slightly different comments. What matters semantically is that the
+    # four compile-time feature-disable calls are gone.
+    print('Swift SDK macro language features: already patched (semantic check)')
 else:
-    raise SystemExit('error: expected Swift macro-disable block not found')
+    raise SystemExit('error: Swift macro feature-disable calls remain but expected block was not recognized')
 
 # Without SwiftSyntax, Swift 6.3.2 otherwise diagnoses each macro declaration's
 # definition as unsupported. Treat the definition as opaque/undefined so SDK
@@ -170,6 +181,8 @@ if new in s:
 elif old in s:
     typecheck_macros_file.write_text(s.replace(old, new, 1))
     print('Swift SDK macro-definition fallback: patched')
+elif 'macro->diagnose(diag::macro_unsupported);' not in s and 'return MacroDefinition::forUndefined();' in s:
+    print('Swift SDK macro-definition fallback: already patched (semantic check)')
 else:
     raise SystemExit('error: expected Swift MacroDefinitionRequest fallback not found')
 
