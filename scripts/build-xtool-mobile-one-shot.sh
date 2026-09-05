@@ -108,6 +108,10 @@ run_all() {
   echo "app triple:    $TRIPLE"
   echo
 
+  echo '=== mobile project pipeline checks ==='
+  bash scripts/test-mobile-project.sh
+  echo
+
   if compiler_graph_is_usable && ! compiler_graph_has_clang_lld; then
     echo 'error: the preserved compiler graph predates the Clang + LLD bootstrap.' >&2
     echo 'Run this cache-preserving upgrade once:' >&2

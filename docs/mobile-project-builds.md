@@ -19,6 +19,10 @@ packaging. The previously successful Hello.swift object probe alone does not
 validate this complete app pipeline; the first device build remains necessary.
 
 Every build has its own output folder and `build.log` under Documents/Builds.
+Target intermediates live under `Targets/<Target>/`; the linked executable
+lives under `Products/<AppName>`. This allows the app and its executable target
+to share a name without the linker output colliding with a directory. An
+occupied output path is rejected before entering the native linker.
 Compiler/linker errors stop the build. Failed builds do not publish an IPA.
 Cancellation takes effect between compiler/linker calls, because native frontend
 calls cannot be safely interrupted inside the app process.
@@ -181,7 +185,8 @@ while testing the new output.
 ## Verification
 
 Run `bash scripts/test-mobile-project.sh` on a host with Swift installed. It
-compiles the portable builder/packager and checks dependency ordering, multi-file
+also runs at the start of the one-shot build script, before the engine/app build.
+The check compiles the portable builder/packager and checks dependency ordering, multi-file
 jobs, unsigned linking arguments, iOS runtime discovery and missing-runtime
 preflight, IPA output, failure handling and archive paths
 using a recording compiler. Python tests exercise graph export, path relocation,

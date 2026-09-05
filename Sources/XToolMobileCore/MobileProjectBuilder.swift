@@ -45,8 +45,13 @@ public enum MobileProjectBuilder {
         let work = outputDirectory.appendingPathComponent("\(manifest.name)-\(UUID().uuidString)", isDirectory: true)
         let modules = work.appendingPathComponent("Modules", isDirectory: true)
         let cache = work.appendingPathComponent("ModuleCache", isDirectory: true)
+        // Product and target names commonly match. Keep their filesystem
+        // namespaces separate so LLD never receives a target directory as -o.
+        let targetRoot = work.appendingPathComponent("Targets", isDirectory: true)
+        let products = work.appendingPathComponent("Products", isDirectory: true)
         try fm.createDirectory(at: modules, withIntermediateDirectories: true)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try fm.createDirectory(at: products, withIntermediateDirectories: true)
         let logURL = work.appendingPathComponent("build.log")
         fm.createFile(atPath: logURL.path, contents: nil)
         let logFile = try FileHandle(forWritingTo: logURL)
@@ -98,7 +103,7 @@ public enum MobileProjectBuilder {
             for target in targets {
                 try checkCancellation()
                 try stage("Compiling \(target.name)")
-                let targetWork = work.appendingPathComponent(target.name, isDirectory: true)
+                let targetWork = targetRoot.appendingPathComponent(target.name, isDirectory: true)
                 try fm.createDirectory(at: targetWork, withIntermediateDirectories: true)
                 var seen: Set<URL> = []
                 let sources = try target.sources.flatMap { try MobileProjectPaths.files($0, root: project.root) }
@@ -167,7 +172,10 @@ public enum MobileProjectBuilder {
                 }
             }
             try checkCancellation()
-            let executable = work.appendingPathComponent(manifest.name)
+            let executable = products.appendingPathComponent(manifest.name)
+            guard !fm.fileExists(atPath: executable.path) else {
+                throw MobileProjectBuildError.invalid("Link output path is already occupied: \(executable.path)")
+            }
             var link = ["-arch", "arm64", "-platform_version", "ios", manifest.deploymentTarget, sdk.targetSDKVersion ?? manifest.deploymentTarget,
                         "-syslibroot", sdk.sdkURL.path, "-e", "_main", "-no_adhoc_codesign",
                         "-rpath", "@executable_path/Frameworks", "-rpath", "/usr/lib/swift"]

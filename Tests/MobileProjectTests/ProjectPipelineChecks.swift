@@ -10,6 +10,7 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
     let location = URL(fileURLWithPath: "/unused/libXToolCompilerEngine.dylib")
     var modules: [String] = []
     var failModule: String?
+    var obstructLinkOutput = false
     var swiftArguments: [[String]] = []
     var linkArguments: [String] = []
     func runSwiftFrontend(arguments: [String], diagnosticsURL: URL?) throws -> MobileBuildResult {
@@ -22,6 +23,10 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         if name == failModule { return MobileBuildResult(standardError: Data("Expected compiler error".utf8), exitCode: 1) }
         try Data("object".utf8).write(to: URL(fileURLWithPath: value("-o")))
         try Data("module".utf8).write(to: URL(fileURLWithPath: value("-emit-module-path")))
+        if obstructLinkOutput {
+            let work = URL(fileURLWithPath: value("-emit-module-path")).deletingLastPathComponent().deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: work.appendingPathComponent("Products/HelloApp"), withIntermediateDirectories: true)
+        }
         return MobileBuildResult()
     }
     func runClangFrontend(arguments: [String], diagnosticsURL: URL?) throws -> MobileBuildResult {
@@ -32,6 +37,7 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         try require(diagnosticsURL != nil, "linker diagnostic capture has a persistent destination")
         linkArguments = arguments
         let output = URL(fileURLWithPath: arguments[arguments.firstIndex(of: "-o")! + 1])
+        try require(!FileManager.default.fileExists(atPath: output.path), "link output must be an unused file path, not a target folder")
         try Data([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 0]).write(to: output)
         return MobileBuildResult()
     }
@@ -61,6 +67,9 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         try require(engine.swiftArguments.allSatisfy { $0.contains("prefer-serialized") && !$0.contains("only-serialized") }, "prebuilt loader remains enabled")
         try require(engine.linkArguments.contains("-no_adhoc_codesign"), "unsigned link")
         try require(engine.linkArguments.filter { $0.hasSuffix(".o") }.count == 2, "link all targets")
+        let linkedExecutable = URL(fileURLWithPath: engine.linkArguments[engine.linkArguments.firstIndex(of: "-o")! + 1])
+        try require(linkedExecutable.lastPathComponent == "HelloApp" && linkedExecutable.deletingLastPathComponent().lastPathComponent == "Products", "product uses separate output directory")
+        try require(engine.linkArguments.filter { $0.hasSuffix(".o") }.allSatisfy { $0.contains("/Targets/") }, "target intermediates are separate from products")
         try require(engine.linkArguments.contains(runtime.path), "link iOS builtins for availability checks")
         try require(engine.linkArguments.firstIndex(of: runtime.path)! > engine.linkArguments.lastIndex(where: { $0.hasSuffix(".o") })!, "builtins follow object inputs")
         try require(!engine.linkArguments.contains { $0.hasSuffix("usr/lib/system") }, "omit missing SDK library directory")
@@ -71,6 +80,19 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         try require(buildLog.contains(runtime.path) && buildLog.contains("Linker arguments:"), "log runtime selection and linker job")
         let recoveredSuccess = try MobileBuildLogRecovery.latest(in: root.appendingPathComponent("Success"))
         try require(recoveredSuccess != nil && recoveredSuccess?.wasInterrupted == false, "completed build is not reported as interrupted")
+        let successReport = try String(contentsOf: recoveredSuccess!.reportURL, encoding: .utf8)
+        try require(successReport.contains("===== Targets/HelloApp/swift.stderr ====="), "recover native diagnostics from new target layout")
+
+        let obstructedEngine = RecordingCompiler()
+        obstructedEngine.obstructLinkOutput = true
+        do {
+            _ = try MobileProjectBuilder.build(project: project, toolchain: toolchain, engine: obstructedEngine,
+                outputDirectory: root.appendingPathComponent("ObstructedOutput"))
+            throw NSError(domain: "Occupied linker output path was accepted", code: 1)
+        } catch MobileProjectBuildError.invalid(let message) {
+            try require(message.contains("Link output path is already occupied"), "explain output path collision")
+        }
+        try require(obstructedEngine.linkArguments.isEmpty, "reject output collision before entering native LLD")
 
         // Simulate process termination: persist a running stage and native
         // diagnostics without executing any completion/cleanup handler.
@@ -153,7 +175,7 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
             throw NSError(domain: "Cycle was not rejected", code: 1)
         } catch MobileProjectBuildError.invalid { }
 
-        let executable = output.ipaURL.deletingLastPathComponent().appendingPathComponent("HelloApp")
+        let executable = linkedExecutable
         for badPath in ["../escape", "/absolute", "Info.plist", "HelloApp"] {
             do {
                 try MobileIPAPackager.packageUnsignedIPA(executableURL: executable,

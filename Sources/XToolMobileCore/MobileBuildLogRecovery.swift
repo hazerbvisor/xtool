@@ -55,7 +55,8 @@ public enum MobileBuildLogRecovery {
         case .cancelled: summary = "Previous build was cancelled."
         }
 
-        // Captures live at the build root (linker) or one target folder deep.
+        // Captures live at the build root (linker) or Targets/<target>.
+        // Also retain support for older builds with <target> at the root.
         // Do not traverse module caches, which can contain thousands of files.
         var diagnostics: [URL] = []
         for child in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) {
@@ -64,6 +65,13 @@ public enum MobileBuildLogRecovery {
                !["Modules", "ModuleCache"].contains(child.lastPathComponent) {
                 diagnostics += (try fm.contentsOfDirectory(at: child, includingPropertiesForKeys: nil))
                     .filter { $0.pathExtension == "stderr" }
+                if child.lastPathComponent == "Targets" {
+                    for target in try fm.contentsOfDirectory(at: child, includingPropertiesForKeys: [.isDirectoryKey]) {
+                        guard (try? target.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+                        diagnostics += (try fm.contentsOfDirectory(at: target, includingPropertiesForKeys: nil))
+                            .filter { $0.pathExtension == "stderr" }
+                    }
+                }
             }
         }
         let reportURL = directory.appendingPathComponent("recovered-build-log.txt")
