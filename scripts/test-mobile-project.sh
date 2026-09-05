@@ -12,6 +12,7 @@ cd "$ROOT"
   Sources/XToolMobileCore/MobileAppProject.swift \
   Sources/XToolMobileCore/MobileAppStarter.swift \
   Sources/XToolMobileCore/MobileProjectBuilder.swift \
+  Sources/XToolMobileCore/MobileBuildLogRecovery.swift \
   Sources/XToolMobileCore/MobileIPAPackager.swift \
   Tests/MobileProjectTests/ProjectPipelineChecks.swift
 "$TEST_WORK/project-checks"

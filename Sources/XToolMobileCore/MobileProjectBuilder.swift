@@ -9,9 +9,21 @@ public protocol MobileProjectCompiler: Sendable {
     var supportsClangFrontend: Bool { get }
     var supportsMachOLLD: Bool { get }
     var location: URL { get }
-    func runSwiftFrontend(arguments: [String]) throws -> MobileBuildResult
-    func runClangFrontend(arguments: [String]) throws -> MobileBuildResult
-    func runMachOLLD(arguments: [String]) throws -> MobileBuildResult
+    func runSwiftFrontend(arguments: [String], diagnosticsURL: URL?) throws -> MobileBuildResult
+    func runClangFrontend(arguments: [String], diagnosticsURL: URL?) throws -> MobileBuildResult
+    func runMachOLLD(arguments: [String], diagnosticsURL: URL?) throws -> MobileBuildResult
+}
+
+public extension MobileProjectCompiler {
+    func runSwiftFrontend(arguments: [String]) throws -> MobileBuildResult {
+        try runSwiftFrontend(arguments: arguments, diagnosticsURL: nil)
+    }
+    func runClangFrontend(arguments: [String]) throws -> MobileBuildResult {
+        try runClangFrontend(arguments: arguments, diagnosticsURL: nil)
+    }
+    func runMachOLLD(arguments: [String]) throws -> MobileBuildResult {
+        try runMachOLLD(arguments: arguments, diagnosticsURL: nil)
+    }
 }
 
 /// Runs one native job at a time, then packages the linked executable without signing.
@@ -41,7 +53,14 @@ public enum MobileProjectBuilder {
         defer { try? logFile.close() }
         func report(_ line: String) {
             try? logFile.write(contentsOf: Data((line + "\n").utf8))
+            try? logFile.synchronize()
             log(line)
+        }
+        var currentStage = "Preparing build"
+        func stage(_ name: String) throws {
+            currentStage = name
+            try MobileBuildLogRecovery.checkpoint(in: work, stage: name)
+            report(name)
         }
         func checkCancellation() throws {
             if isCancelled() { throw CancellationError() }
@@ -64,6 +83,7 @@ public enum MobileProjectBuilder {
         report("Building \(manifest.name) for arm64 iOS \(manifest.deploymentTarget)")
         report("Build log: \(logURL.path)")
         do {
+            try stage("Preparing build")
             // Direct LLD invocation bypasses the Clang driver's automatic
             // compiler-rt linkage, including __isPlatformVersionAtLeast.
             // Resolve it before compiling so an incomplete runtime fails early.
@@ -77,7 +97,7 @@ public enum MobileProjectBuilder {
             let targetTriple = "arm64-apple-ios\(manifest.deploymentTarget)"
             for target in targets {
                 try checkCancellation()
-                report("Compiling \(target.name)")
+                try stage("Compiling \(target.name)")
                 let targetWork = work.appendingPathComponent(target.name, isDirectory: true)
                 try fm.createDirectory(at: targetWork, withIntermediateDirectories: true)
                 var seen: Set<URL> = []
@@ -109,8 +129,9 @@ public enum MobileProjectBuilder {
                     for header in headers { args += ["-I", header.path] }
                     args += (target.cFlags ?? []).map(expand)
                     args += [source.path, "-o", object.path]
-                    report("Clang: \(source.lastPathComponent)")
-                    try checked(engine.runClangFrontend(arguments: args), job: target.name, output: object)
+                    try stage("Compiling \(target.name): \(source.lastPathComponent)")
+                    try checked(engine.runClangFrontend(arguments: args,
+                        diagnosticsURL: targetWork.appendingPathComponent("native-\(index).stderr")), job: target.name, output: object)
                     objects.append(object)
                 }
                 if !swiftSources.isEmpty {
@@ -138,7 +159,9 @@ public enum MobileProjectBuilder {
                     if target.parseAsLibrary ?? (target.name != manifest.executableTarget || !hasMainFile) { args += ["-parse-as-library"] }
                     args += (target.swiftFlags ?? []).map(expand)
                     args += ["-module-name", target.name, "-emit-module-path", module.path, "-o", object.path]
-                    try checked(engine.runSwiftFrontend(arguments: args), job: target.name, output: object)
+                    try stage("Compiling \(target.name) (Swift)")
+                    try checked(engine.runSwiftFrontend(arguments: args,
+                        diagnosticsURL: targetWork.appendingPathComponent("swift.stderr")), job: target.name, output: object)
                     guard fm.fileExists(atPath: module.path) else { throw MobileProjectBuildError.invalid("Missing Swift module: \(target.name)") }
                     objects.append(object)
                 }
@@ -172,9 +195,10 @@ public enum MobileProjectBuilder {
             for library in manifest.libraries ?? [] { link += ["-l" + library] }
             // Mach-O object LC_LINKER_OPTION records carry Swift/framework autolinks.
             link += ["-o", executable.path]
-            report("Linking \(manifest.name)")
+            try stage("Linking \(manifest.name)")
             report("Linker arguments:\n" + link.map { "  " + $0 }.joined(separator: "\n"))
-            try checked(engine.runMachOLLD(arguments: link), job: "Link", output: executable)
+            try checked(engine.runMachOLLD(arguments: link,
+                diagnosticsURL: work.appendingPathComponent("link.stderr")), job: "Link", output: executable)
             let binary = try FileHandle(forReadingFrom: executable)
             let header = try binary.read(upToCount: 16) ?? Data()
             try binary.close()
@@ -215,7 +239,7 @@ public enum MobileProjectBuilder {
                 }
                 extraPlist = dict
             } else { extraPlist = [:] }
-            report("Packaging unsigned IPA")
+            try stage("Packaging unsigned IPA")
             try MobileIPAPackager.packageUnsignedIPA(executableURL: executable,
                 configuration: MobileIPAConfiguration(productName: manifest.name, executableName: manifest.name,
                     bundleIdentifier: manifest.bundleIdentifier, displayName: manifest.name,
@@ -223,9 +247,12 @@ public enum MobileProjectBuilder {
                     minimumOSVersion: manifest.deploymentTarget), additionalFiles: files,
                 additionalInfoPlist: extraPlist, outputURL: ipa)
             report("SUCCESS: \(ipa.lastPathComponent)")
+            try MobileBuildLogRecovery.checkpoint(in: work, stage: currentStage, status: .succeeded)
             return MobileProjectBuildOutput(ipaURL: ipa, logURL: logURL)
         } catch {
             report("BUILD FAILED: \(error)")
+            try? MobileBuildLogRecovery.checkpoint(in: work, stage: currentStage,
+                status: error is CancellationError ? .cancelled : .failed)
             throw error
         }
     }

@@ -117,7 +117,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
         try runSwiftFrontend(arguments: plan.arguments)
     }
 
-    public func runSwiftFrontend(arguments: [String]) throws -> MobileBuildResult {
+    public func runSwiftFrontend(arguments: [String], diagnosticsURL: URL? = nil) throws -> MobileBuildResult {
         var frontendArguments = arguments
         if frontendArguments.first == "-frontend" {
             frontendArguments.removeFirst()
@@ -125,7 +125,8 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
 
         return try runNative(
             arguments: frontendArguments,
-            function: runFrontendFunction
+            function: runFrontendFunction,
+            diagnosticsURL: diagnosticsURL
         )
     }
 
@@ -133,7 +134,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
     ///
     /// Arguments are frontend/cc1 arguments and must not contain an executable
     /// argv[0] entry or the desktop driver's `-cc1` dispatch marker.
-    public func runClangFrontend(arguments: [String]) throws -> MobileBuildResult {
+    public func runClangFrontend(arguments: [String], diagnosticsURL: URL? = nil) throws -> MobileBuildResult {
         guard let runClangFunction else {
             throw MobileCompilerEngineError.missingSymbol("xtool_clang_frontend_run")
         }
@@ -145,7 +146,8 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
 
         return try runNative(
             arguments: frontendArguments,
-            function: runClangFunction
+            function: runClangFunction,
+            diagnosticsURL: diagnosticsURL
         )
     }
 
@@ -153,14 +155,15 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
     ///
     /// Pass ordinary ld64-style arguments. The native bridge supplies the
     /// synthetic argv[0] entry required by `lldMain`.
-    public func runMachOLLD(arguments: [String]) throws -> MobileBuildResult {
+    public func runMachOLLD(arguments: [String], diagnosticsURL: URL? = nil) throws -> MobileBuildResult {
         guard let runLLDMachOFunction else {
             throw MobileCompilerEngineError.missingSymbol("xtool_lld_macho_run")
         }
 
         return try runNative(
             arguments: arguments,
-            function: runLLDMachOFunction
+            function: runLLDMachOFunction,
+            diagnosticsURL: diagnosticsURL
         )
     }
 
@@ -182,9 +185,10 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
 
     private func runNative(
         arguments: [String],
-        function: NativeRun
+        function: NativeRun,
+        diagnosticsURL: URL?
     ) throws -> MobileBuildResult {
-        let capture = try captureStandardError {
+        let capture = try captureStandardError(persistingTo: diagnosticsURL) {
             try withCStringArray(arguments) { argc, argv in
                 function(argc, argv)
             }
@@ -205,10 +209,13 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
     /// job at a time). A future concurrent build scheduler should replace the
     /// process-global descriptor capture with per-engine diagnostic callbacks.
     private func captureStandardError<R>(
+        persistingTo diagnosticsURL: URL?,
         _ body: () throws -> R
     ) throws -> (value: R, standardError: Data) {
         let fileManager = FileManager.default
-        let captureURL = fileManager.temporaryDirectory
+        // Build captures remain on disk even if the native call never returns.
+        // Probe calls retain their previous temporary-file behavior.
+        let captureURL = diagnosticsURL ?? fileManager.temporaryDirectory
             .appendingPathComponent("xtool-native-engine-\(UUID().uuidString).stderr")
 
         let captureFD = captureURL.path.withCString {
@@ -221,7 +228,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
         let savedStderr = dup(STDERR_FILENO)
         guard savedStderr >= 0 else {
             close(captureFD)
-            try? fileManager.removeItem(at: captureURL)
+            if diagnosticsURL == nil { try? fileManager.removeItem(at: captureURL) }
             throw MobileCompilerEngineError.diagnosticCaptureFailed(errno)
         }
 
@@ -229,7 +236,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
             let capturedErrno = errno
             close(savedStderr)
             close(captureFD)
-            try? fileManager.removeItem(at: captureURL)
+            if diagnosticsURL == nil { try? fileManager.removeItem(at: captureURL) }
             throw MobileCompilerEngineError.diagnosticCaptureFailed(capturedErrno)
         }
 
@@ -241,6 +248,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
         }
 
         fflush(nil)
+        _ = fsync(captureFD)
         _ = dup2(savedStderr, STDERR_FILENO)
         close(savedStderr)
 
@@ -248,7 +256,7 @@ public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Senda
         let captureHandle = FileHandle(fileDescriptor: captureFD, closeOnDealloc: true)
         let capturedData = (try? captureHandle.readToEnd()) ?? Data()
         try? captureHandle.close()
-        try? fileManager.removeItem(at: captureURL)
+        if diagnosticsURL == nil { try? fileManager.removeItem(at: captureURL) }
 
         switch bodyResult! {
         case .success(let value):

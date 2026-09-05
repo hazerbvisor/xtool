@@ -34,6 +34,9 @@ private struct MobileIDEView: View {
     @State private var isBuildingProject = false
     @State private var projectBuildProgress: MobileBuildProgress?
     @State private var latestIPA: URL?
+    @State private var previousBuildLog: MobileRecoveredBuildLog?
+    @State private var showingPreviousBuildLog = false
+    @State private var attemptedBuildLogRecovery = false
 
     @State private var navigatorVisible = true
     @State private var inspectorVisible = true
@@ -81,6 +84,10 @@ private struct MobileIDEView: View {
         }
         .background(Color(uiColor: .systemBackground))
         .onAppear {
+            if !attemptedBuildLogRecovery {
+                attemptedBuildLogRecovery = true
+                recoverPreviousBuildLog(automaticallyPresent: true)
+            }
             discoverCompilerEngineIfNeeded()
             discoverBundledRuntimeIfNeeded()
         }
@@ -97,6 +104,32 @@ private struct MobileIDEView: View {
             allowsMultipleSelection: false
         ) { result in
             importToolchain(result)
+        }
+        .sheet(isPresented: $showingPreviousBuildLog) {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let previousBuildLog {
+                        Text(previousBuildLog.summary)
+                            .font(.headline)
+                        ShareLink(item: previousBuildLog.reportURL) {
+                            Label("Share Build Log", systemImage: "square.and.arrow.up")
+                        }
+                        ScrollView {
+                            Text(previousBuildLog.preview)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .padding()
+                .navigationTitle("Previous Build Log")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingPreviousBuildLog = false }
+                    }
+                }
+            }
         }
     }
 
@@ -507,6 +540,14 @@ private struct MobileIDEView: View {
                 Label("Export Unsigned IPA…", systemImage: "square.and.arrow.up")
             }
         }
+        if previousBuildLog != nil {
+            Button {
+                showingPreviousBuildLog = true
+            } label: {
+                Label("Previous Build Log", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(isBuilding)
+        }
         if isBuildingProject {
             Button("Cancel After Current Step") {
                 projectBuildProgress?.cancel()
@@ -813,11 +854,34 @@ private struct MobileIDEView: View {
                 } catch { appendLog("Project build failed: \(error)") }
                 isBuildingProject = false
                 projectBuildProgress = nil
+                recoverPreviousBuildLog(automaticallyPresent: false)
             }
         } catch { appendLog("Cannot build project: \(error)") }
     }
 
     // MARK: - Compiler/runtime discovery
+
+    private func recoverPreviousBuildLog(automaticallyPresent: Bool) {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let builds = documents.appendingPathComponent("Builds")
+        Task {
+            do {
+                let recovered = try await Task.detached(priority: .utility) {
+                    try MobileBuildLogRecovery.latest(in: builds)
+                }.value
+                guard !isBuildingProject else { return }
+                previousBuildLog = recovered
+                if automaticallyPresent, let recovered, recovered.wasInterrupted {
+                    appendLog(recovered.summary + " Open Previous Build Log to view or share the saved output.")
+                    consoleVisible = true
+                    selectedConsoleTab = .build
+                    showingPreviousBuildLog = true
+                }
+            } catch {
+                appendLog("Could not recover previous build log: \(error)")
+            }
+        }
+    }
 
     private func discoverCompilerEngineIfNeeded() {
         guard !attemptedCompilerEngineDiscovery else { return }

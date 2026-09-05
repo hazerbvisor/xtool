@@ -23,6 +23,27 @@ Compiler/linker errors stop the build. Failed builds do not publish an IPA.
 Cancellation takes effect between compiler/linker calls, because native frontend
 calls cannot be safely interrupted inside the app process.
 
+## Recovering a build after XTool closes
+
+Reopen XTool. If the latest saved build has no completion record, **Previous
+Build Log** opens automatically. It shows the last recorded build stage and a
+bounded preview of the saved output. Choose **Share Build Log** to export the
+full text report, or reopen it later from the Build inspector. Clearing the
+console does not delete saved build logs.
+
+Build stages are checkpointed before compiler/linker calls. Each native job
+writes stderr directly to a persistent `.stderr` file in its build folder;
+recovery does not depend on that native call returning. Reports combine
+`build.log` with those captures, with recent captures last. Successful, failed
+and cancelled builds have completion records and do not trigger the interrupted
+build popup. Older `build.log` files without checkpoints are also recoverable.
+
+This preserves diagnostics already written to disk; it cannot recover output
+that was never emitted or identify an iPadOS memory termination on its own.
+An interrupted build may also mean the app was closed manually. System crash
+and Jetsam reports remain separate. This change does not fix the underlying
+compiler crash or require rebuilding the embedded compiler engine.
+
 ## A mobile project
 
 Open a folder containing `xtool-mobile.json`. Source paths are relative to that
