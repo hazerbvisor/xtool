@@ -26,7 +26,7 @@ if [[ -z "$HOST_SWIFTC" || ! -x "$HOST_SWIFTC" ]]; then
   exit 1
 fi
 
-HOST_SWIFT_VERSION="$($HOST_SWIFTC --version 2>&1 | head -n 1 || true)"
+HOST_SWIFT_VERSION="$("$HOST_SWIFTC" --version 2>&1 | head -n 1 || true)"
 if [[ "$HOST_SWIFT_VERSION" != *"Swift version $REQUIRED_HOST_SWIFT"* ]]; then
   echo "error: Xcode 26.5 mobile runtime currently requires host Swift $REQUIRED_HOST_SWIFT" >&2
   echo "active swiftc: $HOST_SWIFTC" >&2
@@ -53,7 +53,7 @@ if [[ ! -x "$HOST_CLANG" ]]; then
   exit 1
 fi
 
-HOST_CLANG_RESOURCE="$($HOST_CLANG -print-resource-dir 2>/dev/null || true)"
+HOST_CLANG_RESOURCE="$("$HOST_CLANG" -print-resource-dir 2>/dev/null || true)"
 HOST_CLANG_INCLUDE="$HOST_CLANG_RESOURCE/include"
 if [[ -z "$HOST_CLANG_RESOURCE" || ! -d "$HOST_CLANG_INCLUDE" ]]; then
   echo "error: unable to locate builtin headers from Swift-sibling clang: $HOST_CLANG" >&2
@@ -213,13 +213,16 @@ echo "Upstream Swift stdlib module:"
 ls -lh "$XTOOL_SWIFT_MODULE"
 
 # Validate the exact custom prebuilt cache before packaging it. This uses the
-# same upstream frontend and forces serialized-only Swift module loading, so a
-# bad filename, stale dependency record, or unreadable serialized module fails
-# on the build host rather than after another IPA install on the iPad.
+# same upstream frontend and loader mode as the on-device compiler. Swift's
+# OnlySerialized mode disables ModuleInterfaceLoader entirely, including its
+# prebuilt-cache lookup; it cannot validate -prebuilt-module-cache-path.
+# Keep that loader enabled and verify its loading remarks instead, so falling
+# back to rebuilding Swift or loading a different module cannot pass this gate.
 VALIDATION_ROOT="$OUT_ROOT/.host-swift-validation"
 VALIDATION_CACHE="$VALIDATION_ROOT/ModuleCache"
 VALIDATION_SOURCE="$VALIDATION_ROOT/Hello.swift"
 VALIDATION_OBJECT="$VALIDATION_ROOT/Hello.o"
+VALIDATION_STDERR="$VALIDATION_ROOT/stderr.log"
 rm -rf "$VALIDATION_ROOT"
 mkdir -p "$VALIDATION_CACHE"
 cat > "$VALIDATION_SOURCE" <<'EOF'
@@ -229,7 +232,7 @@ public func xtoolPrebuiltValidation() -> Int {
 EOF
 
 echo "Validating XTool prebuilt Swift stdlib cache ..."
-SWIFT_FORCE_MODULE_LOADING=only-serialized \
+if ! SWIFT_FORCE_MODULE_LOADING=prefer-serialized \
 "$HOST_SWIFTC" -frontend \
   -c -primary-file "$VALIDATION_SOURCE" \
   -target arm64-apple-ios16.0 \
@@ -241,7 +244,10 @@ SWIFT_FORCE_MODULE_LOADING=only-serialized \
   -I "$OUT_DEVELOPER/Platforms/iPhoneOS.platform/Developer/usr/lib" \
   -module-cache-path "$VALIDATION_CACHE" \
   -prebuilt-module-cache-path "$XTOOL_PREBUILT_ROOT" \
-  -module-load-mode only-serialized \
+  -module-load-mode prefer-serialized \
+  -Rmodule-loading \
+  -Rmodule-interface-rebuild \
+  -diagnostic-style llvm \
   -disable-modules-validate-system-headers \
   -target-sdk-version "$SDK_VERSION" \
   -target-sdk-name "iphoneos$SDK_VERSION" \
@@ -250,10 +256,39 @@ SWIFT_FORCE_MODULE_LOADING=only-serialized \
   -Xcc -isystem \
   -Xcc "$BOUND_CLANG_INCLUDE" \
   -module-name XToolPrebuiltValidation \
-  -o "$VALIDATION_OBJECT"
+  -o "$VALIDATION_OBJECT" \
+  2>"$VALIDATION_STDERR"; then
+  echo "error: XTool prebuilt Swift stdlib validation failed" >&2
+  tail -n 160 "$VALIDATION_STDERR" >&2 || true
+  exit 1
+fi
 
 if [[ ! -s "$VALIDATION_OBJECT" ]]; then
   echo "error: XTool prebuilt Swift stdlib validation did not produce an object" >&2
+  exit 1
+fi
+if ! python3 - "$VALIDATION_STDERR" "$XTOOL_SWIFT_MODULE" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+diagnostics = Path(sys.argv[1]).read_text(errors='replace')
+expected = Path(sys.argv[2]).resolve()
+if re.search(r"rebuilding module 'Swift' from interface", diagnostics):
+    raise SystemExit('error: Swift was rebuilt from its interface instead of using the bundled prebuilt module')
+
+# Swift 6.3.2's module_loaded remark reports both the source interface and the
+# loaded binary. Check the loaded field, not merely a mention of the cache.
+loaded_paths = re.findall(
+    r"loaded module 'Swift'; source: '[^'\n]*', loaded: '([^'\n]+)'",
+    diagnostics,
+)
+if not any(Path(path).resolve() == expected for path in loaded_paths):
+    raise SystemExit('error: Swift loading diagnostics did not confirm the bundled prebuilt module')
+print(f'Confirmed prebuilt Swift module: {expected}')
+PY
+then
+  tail -n 160 "$VALIDATION_STDERR" >&2 || true
   exit 1
 fi
 rm -rf "$VALIDATION_ROOT"
