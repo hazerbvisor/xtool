@@ -64,6 +64,11 @@ public enum MobileProjectBuilder {
         report("Building \(manifest.name) for arm64 iOS \(manifest.deploymentTarget)")
         report("Build log: \(logURL.path)")
         do {
+            // Direct LLD invocation bypasses the Clang driver's automatic
+            // compiler-rt linkage, including __isPlatformVersionAtLeast.
+            // Resolve it before compiling so an incomplete runtime fails early.
+            let compilerRuntime = try iOSCompilerRuntime(toolchain: toolchain, sdk: sdk, fileManager: fm)
+            report("iOS compiler runtime: \(compilerRuntime.path)")
             var objects: [URL] = []
             var moduleMaps: [URL] = []
             for target in targets {
@@ -142,22 +147,33 @@ public enum MobileProjectBuilder {
             let executable = work.appendingPathComponent(manifest.name)
             var link = ["-arch", "arm64", "-platform_version", "ios", manifest.deploymentTarget, sdk.targetSDKVersion ?? manifest.deploymentTarget,
                         "-syslibroot", sdk.sdkURL.path, "-e", "_main", "-no_adhoc_codesign",
-                        "-rpath", "@executable_path/Frameworks", "-rpath", "/usr/lib/swift",
-                        "-L", sdk.sdkURL.appendingPathComponent("usr/lib").path,
-                        "-L", sdk.sdkURL.appendingPathComponent("usr/lib/system").path,
-                        "-L", sdk.sdkURL.appendingPathComponent("usr/lib/swift").path,
-                        "-L", sdk.iPhoneOSSwiftResourceDirectory.path,
-                        "-F", sdk.sdkURL.appendingPathComponent("System/Library/Frameworks").path]
-            for path in sdk.librarySearchPaths { link += ["-L", path.path] }
+                        "-rpath", "@executable_path/Frameworks", "-rpath", "/usr/lib/swift"]
+            let libraryPaths = [
+                sdk.sdkURL.appendingPathComponent("usr/lib"),
+                sdk.sdkURL.appendingPathComponent("usr/lib/system"),
+                sdk.sdkURL.appendingPathComponent("usr/lib/swift"),
+                sdk.iPhoneOSSwiftResourceDirectory,
+            ] + sdk.librarySearchPaths
+            var seenLibraries: Set<String> = []
+            for path in libraryPaths {
+                var directory: ObjCBool = false
+                if fm.fileExists(atPath: path.path, isDirectory: &directory), directory.boolValue,
+                   seenLibraries.insert(path.path).inserted {
+                    link += ["-L", path.path]
+                }
+            }
+            link += ["-F", sdk.sdkURL.appendingPathComponent("System/Library/Frameworks").path]
             for path in manifest.librarySearchPaths ?? [] { link += ["-L", try input(path).path] }
             link += objects.map(\.path)
             for path in manifest.linkFiles ?? [] { link.append(try input(path).path) }
+            link.append(compilerRuntime.path)
             link += ["-lSystem", "-lobjc", "-lc++"]
             for framework in manifest.frameworks ?? [] { link += ["-framework", framework] }
             for library in manifest.libraries ?? [] { link += ["-l" + library] }
             // Mach-O object LC_LINKER_OPTION records carry Swift/framework autolinks.
             link += ["-o", executable.path]
             report("Linking \(manifest.name)")
+            report("Linker arguments:\n" + link.map { "  " + $0 }.joined(separator: "\n"))
             try checked(engine.runMachOLLD(arguments: link), job: "Link", output: executable)
             let binary = try FileHandle(forReadingFrom: executable)
             let header = try binary.read(upToCount: 16) ?? Data()
@@ -212,5 +228,45 @@ public enum MobileProjectBuilder {
             report("BUILD FAILED: \(error)")
             throw error
         }
+    }
+
+    /// Only use the device iOS builtins archive from the imported Darwin tree.
+    /// Host Linux, macOS and iOS simulator runtimes are not substitutes.
+    private static func iOSCompilerRuntime(
+        toolchain: PreparedToolchain,
+        sdk: MobileSwiftSDKConfiguration,
+        fileManager: FileManager
+    ) throws -> URL {
+        var resourceDirectories = [
+            sdk.swiftResourceDirectory.appendingPathComponent("clang"),
+            toolchain.toolchainDirectory.appendingPathComponent("usr/lib/swift/clang"),
+        ]
+        // Some SDKBuilder exports retain only the versioned Clang resource
+        // directory instead of the usual usr/lib/swift/clang symlink.
+        let versionRoots = [
+            sdk.swiftResourceDirectory.deletingLastPathComponent().appendingPathComponent("clang"),
+            toolchain.toolchainDirectory.appendingPathComponent("usr/lib/clang"),
+        ]
+        for root in versionRoots {
+            let versions = (try? fileManager.contentsOfDirectory(at: root,
+                includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+            resourceDirectories += versions.sorted {
+                $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending
+            }
+        }
+        var searched: [String] = []
+        for directory in resourceDirectories {
+            let archive = directory.appendingPathComponent("lib/darwin/libclang_rt.ios.a").resolvingSymlinksInPath()
+            guard !searched.contains(archive.path) else { continue }
+            searched.append(archive.path)
+            if let values = try? archive.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+               values.isRegularFile == true, (values.fileSize ?? 0) > 0,
+               fileManager.isReadableFile(atPath: archive.path) {
+                return archive
+            }
+        }
+        throw MobileProjectBuildError.invalid(
+            "Missing iOS compiler runtime libclang_rt.ios.a. Re-prepare/import the Darwin runtime with Clang's device libraries. Searched:\n"
+                + searched.joined(separator: "\n"))
     }
 }

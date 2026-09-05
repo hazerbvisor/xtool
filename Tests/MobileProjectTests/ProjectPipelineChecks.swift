@@ -43,6 +43,13 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         let toolchain = PreparedToolchain(root: root.appendingPathComponent("SDKFixture"))
         try fm.createDirectory(at: toolchain.iPhoneOSPlatform.appendingPathComponent("Developer/SDKs/iPhoneOS26.5.sdk"), withIntermediateDirectories: true)
         try fm.createDirectory(at: toolchain.toolchainDirectory.appendingPathComponent("usr/lib/swift/iphoneos"), withIntermediateDirectories: true)
+        func runtimeArchive(_ relativePath: String, contents: String = "fixture archive") throws -> URL {
+            let url = toolchain.toolchainDirectory.appendingPathComponent(relativePath).resolvingSymlinksInPath()
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: url)
+            return url
+        }
+        let runtime = try runtimeArchive("usr/lib/swift/clang/lib/darwin/libclang_rt.ios.a")
         let engine = RecordingCompiler()
         let output = try MobileProjectBuilder.build(project: project, toolchain: toolchain, engine: engine,
             outputDirectory: root.appendingPathComponent("Success"))
@@ -51,9 +58,41 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
         try require(engine.swiftArguments.allSatisfy { $0.contains("prefer-serialized") && !$0.contains("only-serialized") }, "prebuilt loader remains enabled")
         try require(engine.linkArguments.contains("-no_adhoc_codesign"), "unsigned link")
         try require(engine.linkArguments.filter { $0.hasSuffix(".o") }.count == 2, "link all targets")
+        try require(engine.linkArguments.contains(runtime.path), "link iOS builtins for availability checks")
+        try require(engine.linkArguments.firstIndex(of: runtime.path)! > engine.linkArguments.lastIndex(where: { $0.hasSuffix(".o") })!, "builtins follow object inputs")
+        try require(!engine.linkArguments.contains { $0.hasSuffix("usr/lib/system") }, "omit missing SDK library directory")
         let ipaData = try Data(contentsOf: output.ipaURL)
         try require(ipaData.starts(with: [0x50, 0x4b, 0x03, 0x04]), "ZIP archive written")
         try require(ipaData.range(of: Data("Payload/HelloApp.app/Info.plist".utf8)) != nil, "IPA payload layout")
+        let buildLog = try String(contentsOf: output.logURL, encoding: .utf8)
+        try require(buildLog.contains(runtime.path) && buildLog.contains("Linker arguments:"), "log runtime selection and linker job")
+
+        // Empty canonical archive: fall back to the newest versioned device
+        // runtime (numeric version order), never the host/simulator archive.
+        try Data().write(to: runtime)
+        let olderRuntime = try runtimeArchive("usr/lib/clang/9/lib/darwin/libclang_rt.ios.a")
+        let newerRuntime = try runtimeArchive("usr/lib/clang/20/lib/darwin/libclang_rt.ios.a")
+        _ = try runtimeArchive("usr/lib/swift/clang/lib/darwin/libclang_rt.osx.a")
+        _ = try runtimeArchive("usr/lib/swift/clang/lib/darwin/libclang_rt.iossim.a")
+        let fallbackEngine = RecordingCompiler()
+        _ = try MobileProjectBuilder.build(project: project, toolchain: toolchain, engine: fallbackEngine,
+            outputDirectory: root.appendingPathComponent("Fallback"))
+        try require(fallbackEngine.linkArguments.contains(newerRuntime.path), "discover newest versioned iOS runtime")
+        try require(!fallbackEngine.linkArguments.contains(olderRuntime.path), "ignore older fallback runtime")
+        try require(!fallbackEngine.linkArguments.contains { $0.hasSuffix("libclang_rt.osx.a") || $0.hasSuffix("libclang_rt.iossim.a") }, "reject host and simulator runtimes")
+
+        try fm.removeItem(at: olderRuntime)
+        try fm.removeItem(at: newerRuntime)
+        let missingEngine = RecordingCompiler()
+        do {
+            _ = try MobileProjectBuilder.build(project: project, toolchain: toolchain, engine: missingEngine,
+                outputDirectory: root.appendingPathComponent("MissingRuntime"))
+            throw NSError(domain: "Missing device runtime was accepted", code: 1)
+        } catch MobileProjectBuildError.invalid(let message) {
+            try require(message.contains("libclang_rt.ios.a"), "actionable missing runtime error")
+        }
+        try require(missingEngine.modules.isEmpty && missingEngine.linkArguments.isEmpty, "preflight runtime before expensive compilation")
+        _ = try runtimeArchive("usr/lib/swift/clang/lib/darwin/libclang_rt.ios.a")
 
         engine.failModule = "Greeting"
         let failureRoot = root.appendingPathComponent("Failure")
@@ -82,6 +121,6 @@ private final class RecordingCompiler: MobileProjectCompiler, @unchecked Sendabl
                 throw NSError(domain: "Invalid IPA path was accepted", code: 1)
             } catch MobileIPAPackager.PackagerError.invalidArchivePath { }
         }
-        print("PASS: dependency order, multi-file jobs, linking, IPA output, failure handling, cycles and archive paths")
+        print("PASS: dependency order, multi-file jobs, iOS runtime linkage/discovery/preflight, IPA output, failure handling, cycles and archive paths")
     }
 }

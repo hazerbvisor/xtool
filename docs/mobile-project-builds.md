@@ -73,6 +73,22 @@ into the app. Swift's Mach-O autolink records supply its runtime/framework links
 The current build runs sequentially and recompiles the selected source targets
 on each attempt; it does not rebuild XTool's installed compiler engine.
 
+The linker also receives the imported toolchain's `libclang_rt.ios.a`. This
+provides compiler support such as `__isPlatformVersionAtLeast`, used by Swift
+OS availability checks. Calling LLD directly requires adding this archive
+explicitly; object autolinks do not replace the Clang driver's runtime setup.
+XTool searches `usr/lib/swift/clang/lib/darwin` and the versioned
+`usr/lib/clang/<version>/lib/darwin` directories. A missing or empty device
+archive stops the build before compilation with the searched paths in the log.
+macOS and simulator archives are not accepted as substitutes. The existing
+runtime preparation script already copies these Clang resource trees.
+
+`build.log` records the selected compiler runtime and complete linker arguments.
+SDK module-rebuilding remarks are informational. An SDK autolink warning such
+as `UIUtilities` remains visible for diagnosis; it is not suppressed or replaced
+with a fabricated framework. Check the actual linker errors and final build
+status to determine whether packaging succeeded.
+
 ## SwiftPM projects
 
 Arbitrary `Package.swift` evaluation, dependency fetching, build-tool plugins and
@@ -145,7 +161,8 @@ while testing the new output.
 
 Run `bash scripts/test-mobile-project.sh` on a host with Swift installed. It
 compiles the portable builder/packager and checks dependency ordering, multi-file
-jobs, unsigned linking arguments, IPA output, failure handling and archive paths
+jobs, unsigned linking arguments, iOS runtime discovery and missing-runtime
+preflight, IPA output, failure handling and archive paths
 using a recording compiler. Python tests exercise graph export, path relocation,
 header/module-map copying and Mach-O dependency parsing. These tests do not
 replace compiling, linking, signing externally and launching the example on iPad.
