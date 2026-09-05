@@ -1,6 +1,6 @@
 import Foundation
 
-/// A SwiftPM project selected from the iOS/iPadOS Files picker.
+/// A mobile app graph or SwiftPM source project selected in Files.
 public struct MobileProject: Sendable, Hashable {
     public let root: URL
 
@@ -31,8 +31,9 @@ public struct MobileProject: Sendable, Hashable {
             throw MobileBuildBackendError.backendUnavailable("Selected project folder is unavailable")
         }
 
-        guard fileManager.fileExists(atPath: packageManifest.path) else {
-            throw MobileBuildBackendError.backendUnavailable("Package.swift is missing from the selected project")
+        guard fileManager.fileExists(atPath: packageManifest.path) ||
+              fileManager.fileExists(atPath: root.appendingPathComponent(MobileAppManifest.filename).path) else {
+            throw MobileBuildBackendError.backendUnavailable("Select a folder containing xtool-mobile.json or Package.swift")
         }
     }
 }

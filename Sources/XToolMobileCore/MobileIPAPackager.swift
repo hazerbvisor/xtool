@@ -45,6 +45,7 @@ public enum MobileIPAPackager {
         executableURL: URL,
         configuration: MobileIPAConfiguration,
         additionalFiles: [MobileIPAFile] = [],
+        additionalInfoPlist: [String: Any] = [:],
         outputURL: URL
     ) throws {
         let fileManager = FileManager.default
@@ -52,8 +53,11 @@ public enum MobileIPAPackager {
             throw PackagerError.missingInput(executableURL.path)
         }
 
+        try MobileAppManifest.validateName(configuration.productName)
+        try MobileAppManifest.validateName(configuration.executableName)
         let appRoot = "Payload/\(configuration.productName).app"
-        let infoPlist = try makeInfoPlist(configuration: configuration)
+        let infoPlist = try makeInfoPlist(configuration: configuration, additional: additionalInfoPlist)
+        var names: Set<String> = [configuration.executableName.lowercased(), "info.plist"]
 
         var entries: [StoreZIP.Entry] = [
             .file(
@@ -72,10 +76,14 @@ public enum MobileIPAPackager {
             guard fileManager.fileExists(atPath: file.sourceURL.path) else {
                 throw PackagerError.missingInput(file.sourceURL.path)
             }
-            let relative = sanitizeRelativePath(file.relativePath)
-            guard !relative.isEmpty else {
+            let relative = file.relativePath
+            let key = relative.lowercased()
+            guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("\\"),
+                  !relative.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }),
+                  !names.contains(where: { $0 == key || $0.hasPrefix(key + "/") || key.hasPrefix($0 + "/") }) else {
                 throw PackagerError.invalidArchivePath(file.relativePath)
             }
+            names.insert(key)
             entries.append(
                 .file(
                     sourceURL: file.sourceURL,
@@ -89,14 +97,19 @@ public enum MobileIPAPackager {
             at: outputURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        // Write alongside the destination; failures never expose a partial IPA.
+        let temporary = outputURL.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).ipa")
+        defer { try? fileManager.removeItem(at: temporary) }
+        try StoreZIP.write(entries: entries, to: temporary)
         if fileManager.fileExists(atPath: outputURL.path) {
-            try fileManager.removeItem(at: outputURL)
+            _ = try fileManager.replaceItemAt(outputURL, withItemAt: temporary)
+        } else {
+            try fileManager.moveItem(at: temporary, to: outputURL)
         }
-        try StoreZIP.write(entries: entries, to: outputURL)
     }
 
-    private static func makeInfoPlist(configuration: MobileIPAConfiguration) throws -> Data {
-        let plist: [String: Any] = [
+    private static func makeInfoPlist(configuration: MobileIPAConfiguration, additional: [String: Any]) throws -> Data {
+        var plist: [String: Any] = [
             "CFBundleDevelopmentRegion": "en",
             "CFBundleDisplayName": configuration.displayName,
             "CFBundleExecutable": configuration.executableName,
@@ -122,18 +135,17 @@ public enum MobileIPAPackager {
                 "UIInterfaceOrientationLandscapeRight",
             ],
         ]
+        plist.merge(additional) { _, custom in custom }
+        // Identity and executable paths must agree with what was actually packaged.
+        plist["CFBundleExecutable"] = configuration.executableName
+        plist["CFBundleIdentifier"] = configuration.bundleIdentifier
+        plist["CFBundlePackageType"] = "APPL"
+        plist["MinimumOSVersion"] = configuration.minimumOSVersion
         return try PropertyListSerialization.data(
             fromPropertyList: plist,
             format: .xml,
             options: 0
         )
-    }
-
-    private static func sanitizeRelativePath(_ path: String) -> String {
-        path
-            .split(separator: "/")
-            .filter { $0 != "." && $0 != ".." && !$0.isEmpty }
-            .joined(separator: "/")
     }
 
     public enum PackagerError: Error, CustomStringConvertible {
@@ -186,6 +198,7 @@ private enum StoreZIP {
     }
 
     static func write(entries: [Entry], to outputURL: URL) throws {
+        guard entries.count <= Int(UInt16.max) else { throw MobileIPAPackager.PackagerError.archiveTooLarge }
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: outputURL)
         defer { try? handle.close() }
@@ -201,6 +214,9 @@ private enum StoreZIP {
             }
 
             let nameData = Data(entry.archivePath.utf8)
+            guard nameData.count <= Int(UInt16.max) else {
+                throw MobileIPAPackager.PackagerError.invalidArchivePath(entry.archivePath)
+            }
             let (dosTime, dosDate) = dosTimestamp(Date())
             var header = Data()
             header.appendLE(UInt32(0x04034b50))

@@ -31,6 +31,9 @@ private struct MobileIDEView: View {
     @State private var isPreparingBundledRuntime = false
     @State private var isCompilingHello = false
     @State private var isRunningNativeProbe = false
+    @State private var isBuildingProject = false
+    @State private var projectBuildProgress: MobileBuildProgress?
+    @State private var latestIPA: URL?
 
     @State private var navigatorVisible = true
     @State private var inspectorVisible = true
@@ -135,7 +138,7 @@ private struct MobileIDEView: View {
             }
             .disabled(toolchain == nil || compilerEngine == nil || isBuilding)
             .keyboardShortcut("b", modifiers: .command)
-            .help("Build Current Bootstrap Target (⌘B)")
+            .help("Build Project and Export Unsigned IPA (⌘B)")
 
             Button {
                 saveActiveDocument()
@@ -482,6 +485,36 @@ private struct MobileIDEView: View {
     private var buildInspector: some View {
         inspectorHeading("Build Tools")
         Button {
+            createAppProject()
+        } label: {
+            Label("New Example App", systemImage: "doc.badge.plus")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .disabled(isBuilding)
+
+        Button {
+            buildProjectIPA()
+        } label: {
+            Label("Build Unsigned IPA", systemImage: "shippingbox")
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(project == nil || !nativePipelineReady || isBuilding)
+
+        if let latestIPA {
+            ShareLink(item: latestIPA) {
+                Label("Export Unsigned IPA…", systemImage: "square.and.arrow.up")
+            }
+        }
+        if isBuildingProject {
+            Button("Cancel After Current Step") {
+                projectBuildProgress?.cancel()
+                appendLog("Cancellation requested; waiting for the native compiler call to return.")
+            }
+        }
+        Divider()
+        Button {
             runCompilerProbe()
         } label: {
             Label("Validate SDK + VM", systemImage: "checkmark.seal")
@@ -639,7 +672,7 @@ private struct MobileIDEView: View {
     }
 
     private var isBuilding: Bool {
-        isCompilingHello || isRunningNativeProbe
+        isCompilingHello || isRunningNativeProbe || isBuildingProject || isPreparingBundledRuntime
     }
 
     private var engineReady: Bool {
@@ -717,7 +750,9 @@ private struct MobileIDEView: View {
     private func runCurrentBuild() {
         consoleVisible = true
         selectedConsoleTab = .build
-        if nativePipelineReady {
+        if project != nil {
+            buildProjectIPA()
+        } else if nativePipelineReady {
             runClangLLDProbe()
         } else if helloPlan != nil {
             compileHello()
@@ -725,6 +760,61 @@ private struct MobileIDEView: View {
             prepareHelloCompilerJob(openInEditor: true)
             compileHello()
         }
+    }
+
+    private func createAppProject() {
+        guard !isBuilding else { return }
+        do {
+            let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+            let created = try MobileAppStarter.create(in: documents.appendingPathComponent("Projects"))
+            importProject(.success([created.root]))
+            openGeneratedFile(created.root.appendingPathComponent("Sources/App/ContentView.swift"))
+            appendLog("Example app created. Edit it, then choose Build Unsigned IPA.")
+        } catch { appendLog("Could not create example: \(error)") }
+    }
+
+    private func buildProjectIPA() {
+        guard !isBuilding, let project, let toolchain, let engine = compilerEngine else { return }
+        do {
+            // Save every edited tab. A failed save must stop the build.
+            for index in documents.indices where documents[index].isDirty {
+                try documents[index].text.write(to: documents[index].url, atomically: true, encoding: .utf8)
+                documents[index].isDirty = false
+            }
+            _ = try MobileAppManifest.load(from: project.root)
+            let output = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true).appendingPathComponent("Builds")
+            let progress = MobileBuildProgress()
+            projectBuildProgress = progress
+            latestIPA = nil
+            isBuildingProject = true
+            consoleVisible = true
+            selectedConsoleTab = .build
+            appendLog("Building \(project.name)…")
+            Task {
+                let worker = Task.detached(priority: .userInitiated) {
+                    defer { progress.finish() }
+                    return try MobileProjectBuilder.build(project: project, toolchain: toolchain,
+                        engine: engine, outputDirectory: output,
+                        log: { progress.append($0) }, isCancelled: { progress.isCancelled })
+                }
+                while !progress.isFinished {
+                    for line in progress.drain() { appendLog(line) }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                for line in progress.drain() { appendLog(line) }
+                do {
+                    let result = try await worker.value
+                    latestIPA = result.ipaURL
+                    appendLog("Ready to export: \(result.ipaURL.lastPathComponent)")
+                } catch is CancellationError {
+                    appendLog("Build cancelled.")
+                } catch { appendLog("Project build failed: \(error)") }
+                isBuildingProject = false
+                projectBuildProgress = nil
+            }
+        } catch { appendLog("Cannot build project: \(error)") }
     }
 
     // MARK: - Compiler/runtime discovery
@@ -826,20 +916,26 @@ private struct MobileIDEView: View {
     }
 
     private func importProject(_ result: Result<[URL], Error>) {
+        guard !isBuilding else { appendLog("Wait for the current build before changing projects."); return }
         do {
             guard let url = try result.get().first else { return }
-            releaseSecurityScope(for: projectScopeURL)
-            _ = url.startAccessingSecurityScopedResource()
+            let scoped = url.startAccessingSecurityScopedResource()
 
             let selected = MobileProject(root: url)
-            try selected.validate()
+            do { try selected.validate() } catch {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                throw error
+            }
+            releaseSecurityScope(for: projectScopeURL)
             project = selected
-            projectScopeURL = url
+            projectScopeURL = scoped ? url : nil
+            latestIPA = nil
             navigatorEntries = IDEWorkspaceScanner.scan(root: url)
             documents.removeAll()
             activeDocumentID = nil
             appendLog("project: \(selected.name)")
-            appendLog("Package.swift: found")
+            appendLog(FileManager.default.fileExists(atPath: url.appendingPathComponent(MobileAppManifest.filename).path)
+                ? "Mobile build configuration: found" : "SwiftPM project: prepare xtool-mobile.json before building on-device")
             appendLog("navigator: \(navigatorEntries.filter { !$0.isDirectory }.count) editable files")
         } catch {
             appendLog("project import failed: \(String(describing: error))")
@@ -847,6 +943,7 @@ private struct MobileIDEView: View {
     }
 
     private func importToolchain(_ result: Result<[URL], Error>) {
+        guard !isBuilding else { appendLog("Wait for the current build before changing SDKs."); return }
         do {
             guard let url = try result.get().first else { return }
             releaseSecurityScope(for: toolchainScopeURL)

@@ -11,7 +11,7 @@ import Glibc
 ///
 /// Keeping the heavy compiler implementation behind a dylib means the app, UI
 /// and build planner can be rebuilt independently from the compiler itself.
-public final class MobileCompilerEngine: @unchecked Sendable {
+public final class MobileCompilerEngine: MobileProjectCompiler, @unchecked Sendable {
     public static let dylibName = "libXToolCompilerEngine.dylib"
 
     private typealias NativeRun = @convention(c) (
@@ -114,7 +114,11 @@ public final class MobileCompilerEngine: @unchecked Sendable {
     /// a defensive compatibility measure so older cached plans cannot feed a
     /// driver-only option to the embedded frontend.
     public func run(_ plan: MobileCompilerPlan) throws -> MobileBuildResult {
-        var frontendArguments = plan.arguments
+        try runSwiftFrontend(arguments: plan.arguments)
+    }
+
+    public func runSwiftFrontend(arguments: [String]) throws -> MobileBuildResult {
+        var frontendArguments = arguments
         if frontendArguments.first == "-frontend" {
             frontendArguments.removeFirst()
         }
