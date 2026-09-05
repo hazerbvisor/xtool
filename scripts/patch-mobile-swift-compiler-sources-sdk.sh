@@ -16,6 +16,7 @@ import sys
 
 p = Path(sys.argv[1])
 s = p.read_text()
+original = s
 
 anchor = '''  set(sdk_option ${SWIFT_COMPILER_SOURCES_SDK_FLAGS})
 '''
@@ -86,11 +87,42 @@ new_patch = '''  set(sdk_option ${SWIFT_COMPILER_SOURCES_SDK_FLAGS})
 if new_patch in s:
     print('SwiftCompilerSources Darwin resource-dir fix: already applied (libc++ safe)')
 elif old_patch in s:
-    p.write_text(s.replace(old_patch, new_patch, 1))
+    s = s.replace(old_patch, new_patch, 1)
     print('SwiftCompilerSources Darwin resource-dir fix: upgraded to libc++-safe ordering')
 elif anchor in s:
-    p.write_text(s.replace(anchor, new_patch, 1))
+    s = s.replace(anchor, new_patch, 1)
     print('SwiftCompilerSources Darwin resource-dir fix: applied (libc++ safe)')
 else:
     raise SystemExit('error: expected SwiftCompilerSources sdk_option anchor not found')
+
+# Upstream also adds the executing compiler's ../lib to find swift/shims
+# headers imported by SILBridging. For a Linux -> iOS build that exposes a
+# second SwiftShims module map alongside the one already supplied by the SDK.
+# Select the SDK headers before either the swiftly or ordinary host fallback.
+host_anchor = '''  elseif(swift_exec_bin_dir MATCHES ".*/swiftly/bin")
+'''
+target_shims_patch = '''  elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND XTOOL_FRONTEND_LIBRARY_ONLY)
+    # XTool Mobile: resolve swift/shims headers from the target SDK only.
+    # Adding the Linux compiler's ../lib imports duplicate SwiftShims,
+    # _SwiftConcurrencyShims, SwiftOverlayShims and _SynchronizationShims.
+    if(NOT EXISTS "${sdk_path}/usr/lib/swift/shims/module.modulemap")
+      message(FATAL_ERROR "XTool Mobile: Swift shim module map missing from iPhoneOS SDK: ${sdk_path}/usr/lib/swift/shims/module.modulemap")
+    endif()
+    list(APPEND sdk_option "-I" "${sdk_path}/usr/lib")
+
+  elseif(swift_exec_bin_dir MATCHES ".*/swiftly/bin")
+'''
+
+if target_shims_patch in s:
+    print('SwiftCompilerSources target-only SwiftShims fix: already applied')
+elif s.count(host_anchor) == 1:
+    s = s.replace(host_anchor, target_shims_patch, 1)
+    print('SwiftCompilerSources target-only SwiftShims fix: applied')
+else:
+    raise SystemExit('error: expected SwiftCompilerSources host shim lookup anchor not found; no changes written')
+
+# Commit both changes together after validating all expected source anchors.
+# Avoid touching the file on retries so Ninja need not regenerate needlessly.
+if s != original:
+    p.write_text(s)
 PY
