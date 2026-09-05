@@ -17,7 +17,7 @@ enum MobileSwiftDriverPlanner {
         targetTriple: String,
         includeSearchPaths: [URL],
         clangBuiltinHeaders: URL?,
-        moduleLoadMode: String = "only-serialized"
+        moduleLoadMode: String = "prefer-serialized"
     ) throws -> [String] {
         let runner = try EmbeddedSwiftFrontendRunner.loadFromApplicationBundle()
         let executor = try InProcessPlanningExecutor(runner: runner)
@@ -107,9 +107,11 @@ enum MobileSwiftDriverPlanner {
         // These are frontend-only options, so send them through -Xfrontend
         // instead of relying on process environment inherited by SwiftDriver.
         // The in-process frontend is not a child process and therefore does not
-        // automatically receive Driver.env. The bootstrap defaults to
-        // only-serialized so it can never hide an invalid custom Swift module by
-        // rebuilding Apple's textual stdlib interface again.
+        // automatically receive Driver.env. Match the validated host runtime's
+        // prefer-serialized mode: only-serialized disables ModuleInterfaceLoader,
+        // including the prebuilt-cache lookup. The runtime packaging gate checks
+        // that Swift loads from our cache; emit rebuild remarks here as well to
+        // expose any fallback after the runtime is extracted on the device.
         driverArguments += [
             "-Xfrontend", "-prebuilt-module-cache-path",
             "-Xfrontend", prebuiltModuleCache.path,
@@ -117,6 +119,7 @@ enum MobileSwiftDriverPlanner {
             "-Xfrontend", moduleLoadMode,
             "-Xfrontend", "-disable-modules-validate-system-headers",
             "-Xfrontend", "-Rmodule-loading",
+            "-Xfrontend", "-Rmodule-interface-rebuild",
             "-o", objectURL.path,
         ]
 
